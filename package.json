@@ -1,0 +1,29 @@
+{
+  "name": "job-research-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.6.3",
+  "scripts": {
+    "dev": "concurrently -k -n web,server -c cyan,magenta \"pnpm --filter @job-research/web dev\" \"pnpm --filter @job-research/server dev\"",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r exec tsc --noEmit",
+    "db:migrate": "pnpm --filter @job-research/database db:migrate",
+    "spec:doctor": "openspec doctor",
+    "spec:validate": "openspec validate --all --strict"
+  },
+  "devDependencies": {
+    "@fission-ai/openspec": "^1.12.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^26.4.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "jsdom": "^30.0.1",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  }
+}

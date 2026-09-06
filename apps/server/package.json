@@ -1,0 +1,20 @@
+{
+  "name": "@job-research/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@job-research/application": "workspace:*",
+    "@job-research/contracts": "workspace:*",
+    "@job-research/database": "workspace:*",
+    "@job-research/domain": "workspace:*",
+    "@job-research/model-gateway": "workspace:*",
+    "fastify": "^5.12.3",
+    "zod": "^4.5.4"
+  }
+}
