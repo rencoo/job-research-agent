@@ -7,7 +7,7 @@ function Layout() {
   const health = useQuery({ queryKey: ["runtime-health"], queryFn: () => fetchHealth(), retry: false, refetchInterval: 5_000 });
   return <>
     <header className="app-header">
-      <Link className="brand" to="/">Job Research</Link>
+      <Link className="brand" to="/"><span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 14V9m6 5V4m6 10V7M3 17h14" /></svg></span>Job Research</Link>
       <nav className="header-actions" aria-label="辅助导航">
         <Link to="/opportunities">历史记录</Link>
         <Link to="/profile">简历与偏好</Link>

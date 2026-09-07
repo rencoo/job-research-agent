@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyMigrations, BusinessRepository, JobRepository, openDatabase, type DatabaseConnection } from "@job-research/database";
-import { FakeModel, LocalDemoModel, ModelGatewayError, type ModelGateway } from "@job-research/model-gateway";
-import { DIMENSION_IDS, type ResearchClaim } from "@job-research/contracts";
+import { FakeModel, LocalDemoModel, ModelGatewayError, ModelGatewayResolver, type ModelGateway } from "@job-research/model-gateway";
+import { DIMENSION_IDS, LOCAL_MODEL_CONFIG, type ModelInvocationConfig, type ResearchClaim } from "@job-research/contracts";
 import { HandlerRegistry, LocalJobWorker } from "./worker";
 import { createExtractionHandler, createScreeningHandler, LocalIngestionApplication, LocalOpportunityApplication, LocalProfileApplication, LocalResearchApplication, validateClaims } from "./business-app";
+import { modelConfigFromDescriptor } from "./model-prompts";
 
 let directory: string; let connection: DatabaseConnection; let business: BusinessRepository; let jobs: JobRepository;
 let profile: LocalProfileApplication; let ingestion: LocalIngestionApplication; let opportunities: LocalOpportunityApplication; let research: LocalResearchApplication; let worker: LocalJobWorker;
@@ -60,6 +61,34 @@ describe("local business applications", () => {
     expect(after.assumptions).toContain("发薪月数未注明，按 12 薪估算"); expect(after.conflicts).toHaveLength(1);
   });
 
+  it("isolates an invalid extraction item and lets the user retry only that item", async () => {
+    const invalid = new FakeModel({ type: "success", value: {} }, { provider: "local", model: "local-demo", label: "本地演示模型" });
+    const invalidWorker = new LocalJobWorker({
+      repository: jobs,
+      registry: new HandlerRegistry().register("extract-job-draft", createExtractionHandler(business, invalid, () => now)),
+      workerId: "invalid-extraction",
+      leaseMs: 10_000,
+      clock: { now: () => now },
+    });
+    const imported = await ingestion.importBatch({ items: [{ text: "职位：AI Engineer\n职责：Build Agent" }] }, "invalid-extraction");
+    const batchId = imported.ok ? imported.value.resourceId : "";
+    const item = business.getImportBatch(batchId)!.items[0]!;
+    await invalidWorker.runOnce();
+    expect(business.getImportBatch(batchId)!.items[0]).toMatchObject({ status: "failed", error: { retryable: false } });
+
+    const retried = await ingestion.retryItem(item.id);
+    expect(retried.ok).toBe(true);
+    const retryWorker = new LocalJobWorker({
+      repository: jobs,
+      registry: new HandlerRegistry().register("extract-job-draft", createExtractionHandler(business, new LocalDemoModel(), () => now)),
+      workerId: "valid-extraction",
+      leaseMs: 10_000,
+      clock: { now: () => now },
+    });
+    await retryWorker.runOnce();
+    expect(business.getImportBatch(batchId)!.items[0]).toMatchObject({ status: "ready" });
+  });
+
   it("requires a complete draft and returns confirmed drafts to draft after edits", async () => {
     const opportunityId = await createReadyOpportunity(); const current = business.getDraft(opportunityId)!;
     const confirmed = await opportunities.confirmDraft(opportunityId, { expectedVersion: current.version }); expect(confirmed).toMatchObject({ ok: true, value: { status: "confirmed" } });
@@ -74,6 +103,7 @@ describe("local business applications", () => {
     const repeated = await research.startScreening(opportunityId, "run-key"); expect(repeated).toEqual(started);
     await worker.runOnce();
     const run = business.getRun(started.ok ? started.value.resourceId : "")!; expect(run.status).toBe("completed");
+    expect(run.modelConfig).toEqual(LOCAL_MODEL_CONFIG);
     const report = business.getReport(run.reportId!)!;
     expect(Object.keys(report.dimensions)).toHaveLength(6);
     expect(report.dimensions).not.toHaveProperty("ownership");
@@ -87,6 +117,7 @@ describe("local business applications", () => {
   it("rejects claims whose excerpts are not present in both snapshots", () => {
     const claim = { id: "c", dimension: "work_content" as const, statement: "claim", polarity: "positive" as const, confidence: "high" as const, status: "supported" as const, resumeEvidence: "invented", jobEvidence: "Agent" };
     expect(validateClaims([claim], "TypeScript", "Agent")[0]?.status).toBe("rejected");
+    expect(validateClaims([{ ...claim, resumeEvidence: "[已移除邮箱]", jobEvidence: "Agent" }], "[已移除邮箱] TypeScript", "Agent")[0]?.status).toBe("rejected");
   });
 
   it("keeps stale reports historical and does not adopt them", async () => {
@@ -108,8 +139,10 @@ describe("local business applications", () => {
     business.updateRun(runId, { status: "failed", error: { code: "test", message: "test" } }, now);
     const retried = await research.retryFailed(runId); expect(retried.ok).toBe(true);
     const child = business.getRun(retried.ok ? retried.value.resourceId : "")!;
-    expect(child).toMatchObject({ parentRunId: runId, status: "queued" });
+    expect(child).toMatchObject({ parentRunId: runId, status: "queued", modelConfig: LOCAL_MODEL_CONFIG });
     expect(business.getRun(runId)).toMatchObject({ status: "failed", successorRunId: child.id });
+    const repeated = await research.retryFailed(runId);
+    expect(repeated).toEqual({ ok: true, value: { id: child.id, resourceId: child.id, created: false } });
   });
 
   it("resumes after an existing checkpoint without overwriting it", async () => {
@@ -128,7 +161,9 @@ describe("local business applications", () => {
     await opportunities.confirmDraft(opportunityId, { expectedVersion: draft.version });
     const failedStart = await research.startScreening(opportunityId, "failed-run"); const failedRunId = failedStart.ok ? failedStart.value.resourceId : "";
     const failingWorker = new LocalJobWorker({ repository: jobs, clock: { now: () => now }, workerId: "failing", leaseMs: 1000, registry: new HandlerRegistry().register("screen-opportunity", createScreeningHandler(business, new FakeModel({ type: "failure", error: new ModelGatewayError("fake_failure", "fake", false) }), () => now)) });
-    await failingWorker.runOnce(); expect(business.getRun(failedRunId)?.status).toBe("failed");
+    await failingWorker.runOnce();
+    expect(business.getRun(failedRunId)?.status).toBe("failed");
+    expect(jobs.get(business.getRun(failedRunId)!.jobId)).toMatchObject({ status: "failed", attempts: 1 });
 
     const cancelledStart = await research.startScreening(opportunityId, "cancel-running"); const cancelledRunId = cancelledStart.ok ? cancelledStart.value.resourceId : "";
     const delayedWorker = new LocalJobWorker({ repository: jobs, clock: { now: () => now }, workerId: "delayed", leaseMs: 30, registry: new HandlerRegistry().register("screen-opportunity", createScreeningHandler(business, new FakeModel({ type: "success", value: [], delayMs: 50 }), () => now)) });
@@ -171,6 +206,81 @@ describe("local business applications", () => {
     expect(report.dimensions.work_content.verdict).toBe("positive");
     expect(report.claims).toHaveLength(1);
   });
+
+  it("uses a frozen DeepSeek configuration across extraction and screening without exposing PII", async () => {
+    const capturedInputs: unknown[] = [];
+    const demo = new LocalDemoModel();
+    const deepSeekStub: ModelGateway = {
+      descriptor: { provider: "deepseek", model: "deepseek-test", label: "DeepSeek test double" },
+      generateStructured(request) {
+        capturedInputs.push(request.input);
+        if (request.task === "extract-job-draft") return demo.generateStructured(request);
+        return Promise.resolve(request.validate([workContentClaim("deep", "TypeScript 匹配", "positive")]));
+      },
+    };
+    const config = modelConfigFromDescriptor(deepSeekStub.descriptor);
+    const resolver = new ModelGatewayResolver([deepSeekStub]);
+    const deepProfile = new LocalProfileApplication(business, () => now);
+    const deepIngestion = new LocalIngestionApplication(business, jobs, () => now, config);
+    const deepResearch = new LocalResearchApplication(business, jobs, () => now, config);
+    const deepWorker = new LocalJobWorker({
+      repository: jobs,
+      registry: new HandlerRegistry()
+        .register("extract-job-draft", createExtractionHandler(business, resolver, () => now))
+        .register("screen-opportunity", createScreeningHandler(business, resolver, () => now)),
+      workerId: "deepseek-test",
+      leaseMs: 10_000,
+      clock: { now: () => now },
+    });
+    await deepProfile.save({ ...profileInput, resumeText: `${profileInput.resumeText} 15652663008 person@example.com` });
+    const imported = await deepIngestion.importBatch({ items: [{ text: "职位：AI Agent Engineer\n职责：TypeScript Agent" }] }, "deep-import");
+    const batch = business.getImportBatch(imported.ok ? imported.value.resourceId : "")!;
+    await deepWorker.runOnce();
+    const opportunityId = batch.items[0]!.opportunityId;
+    const draft = business.getDraft(opportunityId)!;
+    expect(draft.extractionModel).toEqual(config);
+    await opportunities.confirmDraft(opportunityId, { expectedVersion: draft.version });
+    const started = await deepResearch.startScreening(opportunityId, "deep-screen");
+    const runId = started.ok ? started.value.resourceId : "";
+    expect(business.getRun(runId)?.modelConfig).toEqual(config);
+    await deepWorker.runOnce();
+    const run = business.getRun(runId)!;
+    const report = business.getReport(run.reportId!)!;
+    expect(report).toMatchObject({ modelLabel: "DeepSeek test double", modelConfig: config });
+    const sent = JSON.stringify(capturedInputs);
+    expect(sent).not.toContain("15652663008");
+    expect(sent).not.toContain("person@example.com");
+    expect(sent).toContain("TypeScript");
+  });
+
+  it("keeps retryable model failures queued and persists only safe error summaries", async () => {
+    await profile.save({ ...profileInput, resumeText: `${profileInput.resumeText} private@example.com` });
+    const opportunityId = await createReadyOpportunity("职位：AI Engineer\n职责：TypeScript Agent private JD");
+    const draft = business.getDraft(opportunityId)!;
+    await opportunities.confirmDraft(opportunityId, { expectedVersion: draft.version });
+    const failing = new FakeModel(
+      { type: "failure", error: new ModelGatewayError("deepseek_rate_limited", "DeepSeek 请求受限，请稍后重试", true) },
+      { provider: "deepseek", model: "deepseek-test", label: "DeepSeek test double" },
+    );
+    const config: ModelInvocationConfig = modelConfigFromDescriptor(failing.descriptor);
+    const deepResearch = new LocalResearchApplication(business, jobs, () => now, config);
+    const started = await deepResearch.startScreening(opportunityId, "retryable-deep");
+    const runId = started.ok ? started.value.resourceId : "";
+    const failingWorker = new LocalJobWorker({
+      repository: jobs,
+      registry: new HandlerRegistry().register("screen-opportunity", createScreeningHandler(business, new ModelGatewayResolver([failing]), () => now)),
+      workerId: "retryable-deep",
+      leaseMs: 10_000,
+      clock: { now: () => now },
+    });
+    await failingWorker.runOnce();
+    expect(business.getRun(runId)?.status).toBe("queued");
+    const run = business.getRun(runId)!;
+    expect(jobs.get(run.jobId)).toMatchObject({ status: "queued", attempts: 1, error: { code: "deepseek_rate_limited", retryable: true } });
+    const persisted = JSON.stringify({ runEvents: business.listRunEvents(runId), job: jobs.get(run.jobId) });
+    expect(persisted).not.toContain("private@example.com");
+    expect(persisted).not.toContain("private JD");
+  });
 });
 
 function workContentClaim(id: string, statement: string, polarity: "positive" | "negative"): ResearchClaim {
@@ -183,8 +293,9 @@ function workContentClaim(id: string, statement: string, polarity: "positive" | 
 function screeningModel(claims: ResearchClaim[]): ModelGateway {
   const demo = new LocalDemoModel();
   return {
+    descriptor: { provider: "local", model: "local-demo", label: "本地演示模型" },
     generateStructured(request) {
-      if (request.metadata?.task === "extract-job-draft") return demo.generateStructured(request);
+      if (request.task === "extract-job-draft") return demo.generateStructured(request);
       return Promise.resolve(request.validate(claims));
     },
   };

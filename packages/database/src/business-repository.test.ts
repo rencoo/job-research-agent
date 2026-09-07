@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Profile, ResearchRun, ScreeningReport } from "@job-research/contracts";
+import { LOCAL_MODEL_CONFIG, type ModelInvocationConfig, type Profile, type ResearchRun, type ScreeningReport } from "@job-research/contracts";
 import { normalizeWeights } from "@job-research/domain";
 import { applyMigrations } from "./migrations";
 import { openDatabase, type DatabaseConnection } from "./connection";
@@ -14,6 +14,14 @@ let connection: DatabaseConnection;
 let repository: BusinessRepository;
 const now = new Date("2026-09-05T00:00:00.000Z");
 const weights = normalizeWeights({}).weights;
+const deepSeekConfig: ModelInvocationConfig = {
+  provider: "deepseek",
+  model: "deepseek-v4-flash",
+  promptVersions: {
+    extractJobDraft: "extract-job-draft/v1",
+    screenOpportunity: "screen-opportunity/v1",
+  },
+};
 const profile: Profile = {
   id: "current", resumeText: "TypeScript Agent engineer", targetRoles: ["AI engineer"], targetLocations: [],
   salary: null, commuteToleranceMinutes: null, highlights: [], constraints: [], redFlags: [], weights,
@@ -48,10 +56,10 @@ describe("BusinessRepository", () => {
 
     repository.transaction(() => repository.createImport({ batchId: "b1", now, items: [{ id: "i1", opportunityId: "o1", text: "JD", status: "queued", jobId: null }] }));
     const draft = repository.getDraft("o1")!;
-    const edited = { ...draft, version: 2, fields: { ...draft.fields, title: { value: "AI Engineer", source: "user" as const, revision: 1 } } };
+    const edited = { ...draft, version: 2, extractionModel: deepSeekConfig, fields: { ...draft.fields, title: { value: "AI Engineer", source: "user" as const, revision: 1 } } };
     repository.saveDraft(edited, 1, now);
     repository.addDraftConflict("o1", { id: "c1", field: "title", currentValue: "AI Engineer", proposedValue: "Frontend" }, now);
-    expect(repository.getDraft("o1")).toMatchObject({ version: 2, fields: { title: { value: "AI Engineer", source: "user", revision: 1 } }, conflicts: [{ id: "c1" }] });
+    expect(repository.getDraft("o1")).toMatchObject({ version: 2, extractionModel: deepSeekConfig, fields: { title: { value: "AI Engineer", source: "user", revision: 1 } }, conflicts: [{ id: "c1" }] });
   });
 
   it("keeps run checkpoints/events unique and detects idempotency reuse", () => {
@@ -61,8 +69,9 @@ describe("BusinessRepository", () => {
     const draft = repository.getDraft("o")!;
     repository.createJobSnapshot("js", "o", draft, "JD", now);
     new JobRepository(connection.sqlite).create({ id: "j", type: "screen-opportunity", payload: { runId: "r" }, now });
-    const run: ResearchRun = { id: "r", opportunityId: "o", jobId: "j", status: "queued", currentStage: null, parentRunId: null, successorRunId: null, reportId: null, createdAt: now.toISOString(), updatedAt: now.toISOString() };
+    const run: ResearchRun = { id: "r", opportunityId: "o", jobId: "j", status: "queued", currentStage: null, parentRunId: null, successorRunId: null, reportId: null, modelConfig: deepSeekConfig, createdAt: now.toISOString(), updatedAt: now.toISOString() };
     repository.createRun(run, { profile: "ps", job: "js" });
+    expect(repository.getRun("r")?.modelConfig).toEqual(deepSeekConfig);
     repository.saveCheckpoint("r", "constraint_check", { ok: true }, now);
     repository.saveCheckpoint("r", "constraint_check", { ok: false }, now);
     expect(repository.getCheckpoint("r", "constraint_check")).toEqual({ ok: true });
@@ -134,6 +143,8 @@ describe("BusinessRepository", () => {
       VALUES ('rp','r-legacy','o-legacy','worth_exploring','complete',1,1,1,1,?,?)
     `).run(JSON.stringify(legacyReport), now.getTime());
     const report = repository.getReport("rp") as ScreeningReport;
+    expect(report.modelConfig).toEqual(LOCAL_MODEL_CONFIG);
+    expect(repository.getRun("r-legacy")?.modelConfig).toEqual(LOCAL_MODEL_CONFIG);
     expect(Object.keys(report.dimensions)).toEqual(expect.arrayContaining(["work_content"]));
     expect(report.dimensions).not.toHaveProperty("ownership");
     expect(report.dimensions.work_content.verdict).toBe("mixed");

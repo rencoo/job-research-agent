@@ -1,0 +1,46 @@
+{
+  "title": "核心 AI 交互",
+  "participants": [
+    {"id": "user", "label": "用户", "actor": true},
+    {"id": "api", "label": "应用层"},
+    {"id": "worker", "label": "Worker"},
+    {"id": "ai", "label": "AI 模型"},
+    {"id": "rules", "label": "确定性规则"},
+    {"id": "db", "label": "SQLite"}
+  ],
+  "messages": [
+    {"note": "无模型：只存画像", "over": "api"},
+    {"from": "user", "to": "api", "label": "保存候选人画像"},
+    {"from": "api", "to": "db", "label": "写入 Profile"},
+    {"from": "db", "to": "api", "label": "已保存", "return": true},
+
+    {"note": "AI-1：只抽 JD 字段", "over": "ai"},
+    {"from": "user", "to": "api", "label": "导入 JD 文本"},
+    {"from": "api", "to": "db", "label": "创建 ImportBatch 与 extract-job-draft Job"},
+    {"from": "db", "to": "api", "label": "返回批次 receipt", "return": true},
+    {"from": "worker", "to": "db", "label": "领取 extract-job-draft"},
+    {"from": "worker", "to": "ai", "label": "generateStructured  extract-job-draft/v1"},
+    {"from": "ai", "to": "worker", "label": "ExtractedJob JSON", "return": true},
+    {"from": "worker", "to": "rules", "label": "Zod 校验，缺失月数按 12 薪估算"},
+    {"from": "rules", "to": "worker", "label": "合法 JobDraft", "return": true},
+    {"from": "worker", "to": "db", "label": "合并 Draft 并记录 extractionModel"},
+
+    {"from": "user", "to": "api", "label": "校对并确认 Draft"},
+    {"from": "api", "to": "db", "label": "Draft 变为 confirmed"},
+
+    {"note": "AI-2：只出候选 Claim", "over": "ai"},
+    {"from": "user", "to": "api", "label": "启动初筛"},
+    {"from": "api", "to": "db", "label": "冻结 ProfileSnapshot 与 JobSnapshot"},
+    {"from": "worker", "to": "db", "label": "领取 screen-opportunity"},
+    {"from": "worker", "to": "rules", "label": "1 constraint_check 硬约束与红旗"},
+    {"from": "rules", "to": "worker", "label": "requiredMisses / blockingFlags", "return": true},
+    {"from": "worker", "to": "ai", "label": "generateStructured  screen-opportunity/v1"},
+    {"from": "ai", "to": "worker", "label": "候选 ResearchClaim 数组", "return": true},
+    {"from": "worker", "to": "rules", "label": "3 claim_validation 双侧原文必须命中"},
+    {"from": "rules", "to": "worker", "label": "supported 或 rejected", "return": true},
+    {"from": "worker", "to": "rules", "label": "4 recommend() 加权得到推荐档位"},
+    {"from": "rules", "to": "worker", "label": "strong_match 到 not_recommended", "return": true},
+    {"from": "worker", "to": "db", "label": "5 组装 ScreeningReport 并落库"},
+    {"from": "api", "to": "user", "label": "六维评测 + 证据 + 规则命中", "return": true}
+  ]
+}

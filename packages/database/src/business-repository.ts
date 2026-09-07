@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import {
   ImportBatchSchema, JobDraftSchema, OpportunityDetailSchema, OpportunitySummarySchema,
-  JobInputSnapshotSchema, ProfileSchema, ProfileSnapshotSchema, ResearchRunSchema, RunEventSchema, ScreeningReportSchema,
+  JobInputSnapshotSchema, LOCAL_MODEL_CONFIG, ProfileSchema, ProfileSnapshotSchema, ResearchRunSchema, RunEventSchema, ScreeningReportSchema,
   type ImportBatch, type JobDraft, type OpportunityDetail, type OpportunitySummary,
   type Profile, type ResearchClaim, type ResearchRun, type RunEvent, type ScreeningReport,
 } from "@job-research/contracts";
@@ -11,7 +11,13 @@ const parse = <T>(value: string): T => JSON.parse(value) as T;
 const encode = (value: unknown): string => JSON.stringify(value);
 const iso = (value: number): string => new Date(value).toISOString();
 const parseProfile = (value: string): Profile => ProfileSchema.parse(upcastProfileRecord(parse(value)));
-const parseReport = (value: string): ScreeningReport => ScreeningReportSchema.parse(upcastScreeningReportRecord(parse(value)));
+const parseReport = (value: string): ScreeningReport => {
+  const record = upcastScreeningReportRecord(parse<Record<string, unknown>>(value));
+  return ScreeningReportSchema.parse({
+    ...record,
+    modelConfig: record.modelConfig ?? LOCAL_MODEL_CONFIG,
+  });
+};
 
 export class PersistenceConflictError extends Error {
   constructor(readonly code: "version_conflict" | "idempotency_conflict", message: string) {
@@ -114,6 +120,7 @@ export class BusinessRepository {
     return JobDraftSchema.parse({
       opportunityId, status: row.status, version: row.version, extractionRevision: row.extraction_revision,
       fields: parse(String(row.fields_json)), assumptions: parse(String(row.assumptions_json)),
+      extractionModel: row.extraction_model_json == null ? null : parse(String(row.extraction_model_json)),
       confirmedAt: row.confirmed_at == null ? null : iso(Number(row.confirmed_at)),
       confirmedVersion: row.confirmed_version,
       conflicts: conflicts.map((conflict) => ({
@@ -126,8 +133,8 @@ export class BusinessRepository {
   }
 
   saveDraft(draft: JobDraft, expectedVersion: number, now: Date): void {
-    const result = this.sqlite.prepare(`UPDATE job_drafts SET status=?,version=?,extraction_revision=?,fields_json=?,assumptions_json=?,confirmed_at=?,confirmed_version=?,updated_at=? WHERE opportunity_id=? AND version=?`)
-      .run(draft.status, draft.version, draft.extractionRevision, encode(draft.fields), encode(draft.assumptions), draft.confirmedAt ? Date.parse(draft.confirmedAt) : null, draft.confirmedVersion, now.getTime(), draft.opportunityId, expectedVersion);
+    const result = this.sqlite.prepare(`UPDATE job_drafts SET status=?,version=?,extraction_revision=?,fields_json=?,assumptions_json=?,extraction_model_json=?,confirmed_at=?,confirmed_version=?,updated_at=? WHERE opportunity_id=? AND version=?`)
+      .run(draft.status, draft.version, draft.extractionRevision, encode(draft.fields), encode(draft.assumptions), draft.extractionModel ? encode(draft.extractionModel) : null, draft.confirmedAt ? Date.parse(draft.confirmedAt) : null, draft.confirmedVersion, now.getTime(), draft.opportunityId, expectedVersion);
     if (result.changes !== 1) throw new PersistenceConflictError("version_conflict", "Draft version changed");
     this.sqlite.prepare("UPDATE opportunities SET version=version+1,updated_at=? WHERE id=?").run(now.getTime(), draft.opportunityId);
   }
@@ -148,8 +155,8 @@ export class BusinessRepository {
   }
 
   createRun(run: ResearchRun, snapshotIds: { profile: string; job: string }): void {
-    this.sqlite.prepare(`INSERT INTO research_runs(id,opportunity_id,job_id,profile_snapshot_id,job_snapshot_id,status,current_stage,parent_run_id,successor_run_id,report_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(run.id, run.opportunityId, run.jobId, snapshotIds.profile, snapshotIds.job, run.status, run.currentStage, run.parentRunId, run.successorRunId, run.reportId, Date.parse(run.createdAt), Date.parse(run.updatedAt));
+    this.sqlite.prepare(`INSERT INTO research_runs(id,opportunity_id,job_id,profile_snapshot_id,job_snapshot_id,status,current_stage,parent_run_id,successor_run_id,report_id,model_config_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(run.id, run.opportunityId, run.jobId, snapshotIds.profile, snapshotIds.job, run.status, run.currentStage, run.parentRunId, run.successorRunId, run.reportId, run.modelConfig ? encode(run.modelConfig) : null, Date.parse(run.createdAt), Date.parse(run.updatedAt));
     this.appendRunEvent(run.id, "status_changed", { status: run.status }, new Date(run.createdAt));
   }
 
@@ -273,5 +280,11 @@ export function emptyDraftFields() {
 }
 
 function mapRun(row: Record<string, unknown>): ResearchRun {
-  return ResearchRunSchema.parse({ id: row.id, opportunityId: row.opportunity_id, jobId: row.job_id, status: row.status, currentStage: row.current_stage, parentRunId: row.parent_run_id, successorRunId: row.successor_run_id, reportId: row.report_id, createdAt: iso(Number(row.created_at)), updatedAt: iso(Number(row.updated_at)) });
+  return ResearchRunSchema.parse({
+    id: row.id, opportunityId: row.opportunity_id, jobId: row.job_id, status: row.status,
+    currentStage: row.current_stage, parentRunId: row.parent_run_id,
+    successorRunId: row.successor_run_id, reportId: row.report_id,
+    modelConfig: row.model_config_json == null ? LOCAL_MODEL_CONFIG : parse(String(row.model_config_json)),
+    createdAt: iso(Number(row.created_at)), updatedAt: iso(Number(row.updated_at)),
+  });
 }

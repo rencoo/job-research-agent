@@ -40,7 +40,7 @@ describe("App", () => {
       }),
     );
     renderApp();
-    expect(await screen.findByRole("heading", { name: "分析一个岗位" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "判断这个岗位值不值得跟" })).toBeInTheDocument();
     expect(screen.queryByText("本地运行时正常")).not.toBeInTheDocument();
     expect(screen.queryByText("运行状态")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "历史记录" })).toBeInTheDocument();

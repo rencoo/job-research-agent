@@ -1,9 +1,10 @@
 ## 1. 草稿预览与编辑
 
-- [x] 1.1 在 `pages.tsx` 增加 `EditableDraft`（中文标签字段表、预览网格、整组编辑、取消/完成），`OpportunityPage` 以 `draft.status !== "confirmed"` 作为 `defaultEditing`，并以 Web 测试验证 confirmed 详情不出现「公司」输入框且存在「编辑岗位草稿」
+- [x] 1.1 在 `pages.tsx` 增加 `EditableDraft`（中文标签字段表、预览网格、整组编辑、取消/保存），`OpportunityPage` 以 `draft.status !== "confirmed"` 作为 `defaultEditing`，并以 Web 测试验证 confirmed 详情不出现「公司」输入框且存在「编辑岗位草稿」
 - [x] 1.2 为岗位职责、任职要求、福利增加可换行预览样式，短字段保持单行省略，并以 Web 测试验证多行职责在预览中保留换行、空福利显示 `-`
 
 ## 2. 交互与回归
 
-- [x] 2.1 将现有「按 `company` 改值」测试改为先点「编辑岗位草稿」再按「公司」修改；版本冲突测试保持预览态点「保存草稿」，并以 `pages.test` 验证 PATCH 仍发出、冲突仍刷新
-- [x] 2.2 补齐 `draft` 默认进入编辑、完成不发保存请求、取消恢复原值的 Web 测试，并确认 `apps/web` 测试通过
+- [x] 2.1 保存时依次保存与确认，移除独立草稿按钮；编辑和提交期间禁用初筛，提交期间禁用输入与取消
+- [x] 2.2 验证重新打开后数据保留、取消恢复原值、保存及确认失败保留输入、按保存返回版本确认与重试
+- [x] 2.3 岗位页面 20 项测试及 Web typecheck 通过

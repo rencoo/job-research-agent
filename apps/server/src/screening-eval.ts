@@ -1,7 +1,7 @@
 import { normalizeWeights, recommend, type Verdict } from "@job-research/domain";
 import { LocalDemoModel } from "@job-research/model-gateway";
-import { ClaimSchema, type Recommendation } from "@job-research/contracts";
-import { z } from "zod";
+import { type Recommendation } from "@job-research/contracts";
+import { buildScreeningModelRequest } from "./model-prompts";
 
 export interface ScreeningEvalCase {
   name: string; resume: string; job: string; requiredMisses?: string[]; blockingFlags?: string[];
@@ -25,7 +25,10 @@ export async function runScreeningEvals(cases = SCREENING_EVAL_CASES) {
   const model = new LocalDemoModel(); const weights = normalizeWeights({}).weights;
   const results = [];
   for (const sample of cases) {
-    const claims = await model.generateStructured({ prompt: "eval", metadata: { task: "screen-opportunity", input: { resumeText: sample.resume, jobText: sample.job } }, validate: (value) => z.array(ClaimSchema).parse(value) });
+    const claims = await model.generateStructured(buildScreeningModelRequest(
+      { resumeText: sample.resume, jobText: sample.job },
+      model.descriptor,
+    ));
     const result = recommend({ requiredMisses: sample.requiredMisses ?? [], blockingFlags: sample.blockingFlags ?? [], coreEvidenceCount: claims.length, verdicts: sample.verdicts ?? {}, weights });
     results.push({ name: sample.name, expected: sample.expected, actual: result.recommendation, passed: result.recommendation === sample.expected });
   }

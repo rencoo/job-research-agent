@@ -19,7 +19,11 @@ describe("database migrations", () => {
     directories.push(directory);
     const connection = openDatabase({ dataDirectory: directory });
     try {
-      expect(applyMigrations(connection.sqlite)).toEqual(["0001_initial.sql", "0002_text_screening.sql"]);
+      expect(applyMigrations(connection.sqlite)).toEqual([
+        "0001_initial.sql",
+        "0002_text_screening.sql",
+        "0003_model_provenance.sql",
+      ]);
       expect(applyMigrations(connection.sqlite)).toEqual([]);
       const tables = connection.sqlite
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")

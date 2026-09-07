@@ -9,5 +9,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "openai": "^7.10.0"
   }
 }

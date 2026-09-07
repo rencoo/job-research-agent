@@ -113,6 +113,30 @@ export const DimensionIdSchema = z.enum([
 export type DimensionId = z.infer<typeof DimensionIdSchema>;
 export const DIMENSION_IDS = DimensionIdSchema.options;
 
+export const ModelProviderSchema = z.enum(["local", "deepseek"]);
+export type ModelProvider = z.infer<typeof ModelProviderSchema>;
+
+export const ModelPromptVersionsSchema = z.object({
+  extractJobDraft: z.string().min(1),
+  screenOpportunity: z.string().min(1),
+});
+
+export const ModelInvocationConfigSchema = z.object({
+  provider: ModelProviderSchema,
+  model: z.string().min(1),
+  promptVersions: ModelPromptVersionsSchema,
+});
+export type ModelInvocationConfig = z.infer<typeof ModelInvocationConfigSchema>;
+
+export const LOCAL_MODEL_CONFIG: ModelInvocationConfig = {
+  provider: "local",
+  model: "local-demo",
+  promptVersions: {
+    extractJobDraft: "extract-job-draft/v1",
+    screenOpportunity: "screen-opportunity/v1",
+  },
+};
+
 export const WeightInputSchema = z.union([
   z.number().finite().nonnegative(),
   z.enum(["low", "medium", "high"]),
@@ -211,6 +235,7 @@ export const JobDraftSchema = z.object({
   conflicts: z.array(DraftConflictSchema),
   confirmedAt: z.string().datetime().nullable(),
   confirmedVersion: z.number().int().positive().nullable(),
+  extractionModel: ModelInvocationConfigSchema.nullable().optional(),
 });
 export type JobDraft = z.infer<typeof JobDraftSchema>;
 export const ProfileSnapshotSchema = z.object({ schemaVersion: z.literal(1), profile: ProfileSchema });
@@ -262,8 +287,8 @@ export const ClaimSchema = z.object({
   polarity: z.enum(["positive", "mixed", "negative"]),
   confidence: z.enum(["high", "medium", "low"]),
   status: z.enum(["supported", "contested", "unsupported", "unknown", "rejected"]),
-  resumeEvidence: z.string(),
-  jobEvidence: z.string(),
+  resumeEvidence: z.string().trim().min(1),
+  jobEvidence: z.string().trim().min(1),
 });
 export type ResearchClaim = z.infer<typeof ClaimSchema>;
 
@@ -282,7 +307,8 @@ export const ScreeningReportSchema = z.object({
   rules: z.array(z.string()),
   claims: z.array(ClaimSchema),
   assumptions: z.array(z.string()),
-  modelLabel: z.literal("本地演示模型"),
+  modelLabel: z.string().min(1),
+  modelConfig: ModelInvocationConfigSchema.nullable().optional(),
   createdAt: z.string().datetime(),
 });
 export type ScreeningReport = z.infer<typeof ScreeningReportSchema>;
@@ -304,6 +330,7 @@ export const ResearchRunSchema = z.object({
   parentRunId: z.string().nullable(),
   successorRunId: z.string().nullable(),
   reportId: z.string().nullable(),
+  modelConfig: ModelInvocationConfigSchema.optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

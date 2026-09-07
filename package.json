@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "concurrently -k -n web,server -c cyan,magenta \"pnpm --filter @job-research/web dev\" \"pnpm --filter @job-research/server dev\"",
     "test": "pnpm -r --if-present test",
+    "test:deepseek-live": "pnpm --filter @job-research/server test:deepseek-live",
     "typecheck": "pnpm -r exec tsc --noEmit",
     "db:migrate": "pnpm --filter @job-research/database db:migrate",
     "spec:doctor": "openspec doctor",

@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import ReactMarkdown from "react-markdown";
@@ -7,6 +7,20 @@ import { ApiError, RunEventClient, cancelRun, confirmDraft, fetchImportBatch, fe
 import { detailRoute } from "./App";
 
 const labels: Record<DimensionId, string> = { people_and_company_reliability: "靠谱的公司和人", life_radius: "合理生活半径", compensation_package: "薪资总包", workload_and_role_boundaries: "工作负荷与职责边界", work_content: "工作内容", career_growth: "职业成长" };
+const recommendationLabels: Record<ScreeningReport["recommendation"], string> = { strong_match: "强匹配", worth_exploring: "值得深入", cautious: "需谨慎", not_recommended: "不推荐", insufficient_information: "信息不足" };
+const historyImportLabels: Record<string, string> = { queued: "排队中", extracting: "识别中", ready: "已抽取", failed: "失败", needs_input: "待补充" };
+const historyDraftLabels: Record<string, string> = { draft: "草稿", confirmed: "已确认" };
+const reportStatusLabels: Record<ScreeningReport["status"], string> = { complete: "完整", partial: "部分", stale: "已过期", invalidated: "已失效" };
+const confidenceLabels = { high: "高", medium: "中", low: "低" } as const;
+const verdictLabels = { positive: "匹配", mixed: "一般", negative: "不匹配", unknown: "未知" } as const;
+const claimStatusLabels = { supported: "已支持", contested: "有争议", unsupported: "无依据", unknown: "未知", rejected: "已驳回" } as const;
+const screeningStages = [
+  { id: "constraint_check", label: "条件检查", title: "正在检查硬性条件", description: "核对必选条件、排除项和风险信号。" },
+  { id: "semantic_match", label: "匹配分析", title: "正在分析简历与岗位", description: "AI 正在提取简历和 JD 中可核验的匹配证据，这一步通常耗时最长。" },
+  { id: "claim_validation", label: "证据核验", title: "正在核验分析证据", description: "确认每条判断都能在简历和 JD 原文中找到依据。" },
+  { id: "recommendation_policy", label: "结论计算", title: "正在计算匹配结论", description: "结合六个评测维度、薪资和硬性规则计算推荐档位。" },
+  { id: "screening_report", label: "生成报告", title: "正在生成分析报告", description: "整理匹配点、风险、未知项和后续建议。" },
+] as const;
 const splitLines = (value: string) => value.split(/\n|,/).map((item) => item.trim()).filter(Boolean);
 const profilePlaceholders = {
   resumeText: "粘贴完整简历文本，建议包含工作经历、项目经历、技能与教育背景",
@@ -32,6 +46,10 @@ function PencilIcon() {
   return <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M15.2 5.2 18.8 8.8M4 20l4.4-1 10.9-10.9a2.5 2.5 0 0 0-3.5-3.5L4.9 15.5 4 20Z" /></svg>;
 }
 
+function ChevronIcon() {
+  return <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></svg>;
+}
+
 function submitOnShortcut(event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
   if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
   event.preventDefault();
@@ -44,7 +62,7 @@ function EditableResume({ value, onChange, defaultEditing, ariaLabel, hintId }: 
   const beginEditing = () => { setOriginal(value); setEditing(true); };
   const cancelEditing = () => { onChange(original); setEditing(!original.trim()); };
   if (editing) return <div className="editable-field editing"><textarea autoFocus aria-label={ariaLabel} aria-describedby={hintId} rows={12} placeholder={profilePlaceholders.resumeText} value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); cancelEditing(); } else submitOnShortcut(event); }} required /><div className="inline-edit-actions"><button type="button" className="text-button" onClick={cancelEditing}>取消</button><button type="button" className="secondary compact-button" disabled={!value.trim()} onClick={() => setEditing(false)}>完成</button></div></div>;
-  return <div className="editable-preview resume-preview" role="button" tabIndex={0} aria-label="编辑当前简历" onClick={beginEditing} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); beginEditing(); } }}><span className="edit-affordance"><PencilIcon /><span>编辑</span></span><div className="markdown-body"><ReactMarkdown components={{ a: ({ children }) => <span className="markdown-link">{children}</span>, img: ({ alt }) => <span>{alt ?? ""}</span> }}>{value}</ReactMarkdown></div></div>;
+  return <div className="editable-preview resume-preview" role="button" tabIndex={0} aria-label="编辑当前简历" onClick={beginEditing} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); beginEditing(); } }}><span className="edit-affordance"><PencilIcon /><span>编辑</span></span><div className="preview-scroll"><div className="markdown-body"><ReactMarkdown components={{ a: ({ children }) => <span className="markdown-link">{children}</span>, img: ({ alt }) => <span>{alt ?? ""}</span> }}>{value}</ReactMarkdown></div></div></div>;
 }
 
 function EditableRoles({ value, onChange, defaultEditing, ariaLabel }: { value: string; onChange(value: string): void; defaultEditing: boolean; ariaLabel: string }) {
@@ -106,7 +124,7 @@ export function ImportPage() {
   const mutation = useMutation({ mutationFn: () => importJobTexts(items.map((text) => ({ text }))), onSuccess: (receipt) => setBatchId(receipt.resourceId) });
   const batch = useQuery({ queryKey: ["import-batch", batchId], queryFn: () => fetchImportBatch(batchId!), enabled: Boolean(batchId), refetchInterval: (query) => query.state.data?.items.every((item) => ["ready", "failed", "needs_input"].includes(item.status)) ? false : 600 });
   return <main className="shell analysis-shell">
-    <header className="page-intro"><p className="eyebrow">JOB FIT ANALYSIS</p><h1>分析一个岗位</h1><p className="subtitle">粘贴 JD，确认识别结果，再生成基于你当前简历的匹配分析。</p></header>
+    <header className="page-intro"><p className="eyebrow">FIRST-PASS SCREENING</p><h1>判断这个岗位值不值得跟</h1><p className="subtitle">对照你的简历和求职底线，标出匹配点、风险和还看不清的地方，帮你决定要不要继续花时间。</p></header>
     <section className={`profile-context ${profile.data ? "ready" : "missing"}`} aria-label="本次分析使用的简历">
       <div><small>本次分析使用</small>{profile.isPending ? <strong>正在读取简历…</strong> : profile.data ? <><strong>{profile.data.targetRoles.join(" / ") || "当前简历"}</strong><span>简历版本 {profile.data.resumeVersion} · 分析时会保存独立快照</span></> : <><strong>还没有可用简历</strong><span>可以先粘贴 JD，识别完成后再补充简历。</span></>}</div>
       <button type="button" className="secondary" onClick={() => setProfileOpen(true)}>{profile.data ? "预览与修改" : "录入简历"}</button>
@@ -116,7 +134,7 @@ export function ImportPage() {
       <form className="form" onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }}>{items.map((text, index) => <label key={index}>JD {index + 1}<textarea aria-label={`JD ${index + 1}`} rows={items.length === 1 ? 10 : 7} placeholder="粘贴岗位职责、任职要求、薪资地点等完整正文…" value={text} onChange={(e) => setItems((current) => current.map((item, i) => i === index ? e.target.value : item))} required />{items.length > 1 ? <button type="button" className="text-button" onClick={() => setItems((current) => current.filter((_, i) => i !== index))}>移除此项</button> : null}</label>)}<div className="actions split-actions"><button type="button" className="secondary" disabled={items.length >= 20} onClick={() => setItems((current) => [...current, ""])}>+ 添加另一个 JD</button><button disabled={mutation.isPending}>{mutation.isPending ? "正在识别…" : `识别岗位（${items.length}）`}</button></div>{mutation.error ? <ErrorNotice error={mutation.error} /> : null}</form>
     </section>
     {batch.data ? <section className="result-section"><div className="section-heading"><div><span className="step-label">第二步</span><h2>确认岗位信息</h2></div></div>{batch.data.items.map((item) => <article className="card import-result" key={item.id}><div><strong>{importStatusLabel(item.status)}</strong><span>岗位 {item.opportunityId.slice(0, 8)}</span></div>{item.error ? <span>{item.error.message}</span> : null}{item.status === "failed" ? <button onClick={() => void retryImportItem(item.id).then(() => batch.refetch())}>重试</button> : null}{item.status === "needs_input" ? <p>该输入只有链接，请重新粘贴 JD 文本。</p> : null}{item.status === "ready" ? <Link className="primary-link" to="/opportunities/$opportunityId" params={{ opportunityId: item.opportunityId }}>确认信息并继续分析</Link> : null}</article>)}</section> : null}
-    <section className="recent-section"><div className="section-heading"><div><span className="step-label">最近</span><h2>分析记录</h2></div><Link to="/opportunities">查看全部</Link></div>{recent.data?.length ? <div className="cards compact-cards">{recent.data.slice(0, 3).map((item) => <article className="card" key={item.id}><div><h3>{item.title ?? "待补充岗位名称"}</h3><p>{item.company ?? "公司未知"} · {item.location ?? "地点未知"}</p></div><Link to="/opportunities/$opportunityId" params={{ opportunityId: item.id }}>查看</Link></article>)}</div> : <p className="empty-copy">完成第一次岗位分析后，结果会出现在这里。</p>}</section>
+    <section className="recent-section"><div className="section-heading"><div><span className="step-label">最近</span><h2>分析记录</h2></div><Link to="/opportunities">查看全部</Link></div>{recent.data?.length ? <ul className="recent-list">{recent.data.slice(0, 3).map((item) => <li key={item.id}><Link className="recent-item" to="/opportunities/$opportunityId" params={{ opportunityId: item.id }}><strong>{item.title ?? "待补充岗位名称"}</strong><span>{item.company ?? "公司未知"} · {item.location ?? "地点未知"}</span></Link></li>)}</ul> : <p className="empty-copy">完成第一次岗位分析后，结果会出现在这里。</p>}</section>
     {profileOpen ? <ResumeDialog profile={profile.data ?? null} onClose={() => setProfileOpen(false)} /> : null}
   </main>;
 }
@@ -152,7 +170,16 @@ function ResumeDialog({ profile, onClose }: { profile: Profile | null; onClose()
 
 export function OpportunitiesPage() {
   const [filters, setFilters] = useState({ keyword: "", status: "", recommendation: "" }); const query = useQuery({ queryKey: ["opportunities", filters], queryFn: () => fetchOpportunities(filters) });
-  return <main className="shell"><h1>历史岗位</h1><p className="subtitle">通过搜索和筛选回看历史数据，不使用看板。</p><div className="filters"><input aria-label="关键词" placeholder="岗位、公司或地点" value={filters.keyword} onChange={(e) => setFilters({ ...filters, keyword: e.target.value })} /><select aria-label="状态" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="">全部状态</option><option value="ready">已抽取</option><option value="confirmed">已确认</option><option value="failed">失败</option></select><select aria-label="推荐" value={filters.recommendation} onChange={(e) => setFilters({ ...filters, recommendation: e.target.value })}><option value="">全部推荐</option>{["strong_match", "worth_exploring", "cautious", "not_recommended", "insufficient_information"].map((value) => <option key={value}>{value}</option>)}</select></div>{query.isPending ? <p role="status">加载中…</p> : null}{query.error ? <ErrorNotice error={query.error} /> : null}{query.data?.length === 0 ? <p>暂无匹配岗位。</p> : null}<div className="cards">{query.data?.map((item) => <article className="card" key={item.id}><h2>{item.title ?? "待补充岗位名称"}</h2><p>{item.company ?? "公司未知"} · {item.location ?? "地点未知"}</p><p>{item.importStatus} / {item.draftStatus} / {item.recommendation ?? "未分析"}</p><Link to="/opportunities/$opportunityId" params={{ opportunityId: item.id }}>查看详情</Link></article>)}</div></main>;
+  return <main className="shell history-shell">
+    <header className="page-intro"><h1>历史岗位</h1><p className="subtitle">通过搜索和筛选回看历史数据，不使用看板。</p></header>
+    <div className="filters">
+      <input aria-label="关键词" placeholder="岗位、公司或地点" value={filters.keyword} onChange={(e) => setFilters({ ...filters, keyword: e.target.value })} />
+      <select aria-label="状态" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="">全部状态</option><option value="ready">已抽取</option><option value="confirmed">已确认</option><option value="failed">失败</option></select>
+      <select aria-label="推荐" value={filters.recommendation} onChange={(e) => setFilters({ ...filters, recommendation: e.target.value })}><option value="">全部推荐</option>{(Object.keys(recommendationLabels) as Array<ScreeningReport["recommendation"]>).map((value) => <option key={value} value={value}>{recommendationLabels[value]}</option>)}</select>
+    </div>
+    {query.isPending ? <p role="status">加载中…</p> : null}{query.error ? <ErrorNotice error={query.error} /> : null}{query.data?.length === 0 ? <p className="empty-copy">暂无匹配岗位。</p> : null}
+    {query.data?.length ? <div className="history-list">{query.data.map((item) => <Link className="history-item" key={item.id} to="/opportunities/$opportunityId" params={{ opportunityId: item.id }}><div><strong>{item.title ?? "待补充岗位名称"}</strong><span>{item.company ?? "公司未知"} · {item.location ?? "地点未知"}</span></div><small><strong>{item.recommendation ? recommendationLabels[item.recommendation] : "未分析"}</strong><span>{historyImportLabels[item.importStatus] ?? item.importStatus} · {historyDraftLabels[item.draftStatus] ?? item.draftStatus}</span></small></Link>)}</div> : null}
+  </main>;
 }
 
 const draftFields = [
@@ -171,34 +198,93 @@ type DraftValues = Record<DraftKey, string>;
 const numericDraftKeys: readonly DraftKey[] = ["salaryMinMonthly", "salaryMaxMonthly", "payMonths"];
 const emptyDraftValues = Object.fromEntries(draftFields.map((field) => [field.key, ""])) as DraftValues;
 
-function EditableDraft({ values, onChange, defaultEditing }: { values: DraftValues; onChange(patch: Partial<DraftValues>): void; defaultEditing: boolean }) {
+function EditableDraft({ values, onChange, defaultEditing, onComplete, pending, onEditingChange }: { values: DraftValues; onChange(patch: Partial<DraftValues>): void; defaultEditing: boolean; onComplete(): Promise<unknown>; pending: boolean; onEditingChange(editing: boolean): void }) {
   const [editing, setEditing] = useState(defaultEditing);
   const [original, setOriginal] = useState(values);
-  const beginEditing = () => { setOriginal(values); setEditing(true); };
-  const cancelEditing = () => { onChange(original); setEditing(false); };
+  useEffect(() => { onEditingChange(defaultEditing); }, []);
+  const beginEditing = () => { setOriginal(values); setEditing(true); onEditingChange(true); };
+  const cancelEditing = () => { if (pending) return; onChange(original); setEditing(false); onEditingChange(false); };
+  const completeEditing = async () => { try { await onComplete(); setEditing(false); onEditingChange(false); } catch { /* Keep inputs available for correction and retry. */ } };
   const bindField = (field: (typeof draftFields)[number]) => ({
     "aria-label": field.label,
+    disabled: pending,
     value: values[field.key],
     onChange: (event: { target: { value: string } }) => onChange({ [field.key]: event.target.value }),
     onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Escape") { event.preventDefault(); cancelEditing(); } },
   });
-  if (editing) return <div className="editable-field editing"><div className="grid">{draftFields.map((field) => <label key={field.key}>{field.label}<textarea rows={field.multiline ? 5 : 2} {...bindField(field)} /></label>)}</div><div className="inline-edit-actions"><button type="button" className="text-button" onClick={cancelEditing}>取消</button><button type="button" className="secondary compact-button" onClick={() => setEditing(false)}>完成</button></div></div>;
+  if (editing) return <div className="editable-field editing draft-editor"><div className="inline-edit-actions draft-edit-actions"><button type="button" className="text-button" disabled={pending} onClick={cancelEditing}>取消</button><button type="button" className="compact-button" disabled={pending} onClick={() => void completeEditing()}>{pending ? "保存中…" : "保存"}</button></div><div className="grid">{draftFields.map((field) => <label key={field.key}>{field.label}<textarea rows={field.multiline ? 5 : 2} {...bindField(field)} /></label>)}</div></div>;
   return <div className="editable-preview preferences-preview"><button type="button" className="edit-affordance" aria-label="编辑岗位草稿" onClick={beginEditing}><PencilIcon /><span>编辑</span></button><div className="grid">{draftFields.map((field) => { const empty = !values[field.key].trim(); const text = empty ? "-" : values[field.key]; return <div className="form-field" key={field.key}><span className="field-label">{field.label}</span><span className={`${empty ? "preview-value empty" : "preview-value"}${field.multiline ? " multiline" : ""}`} title={!empty && !field.multiline ? text : undefined}>{text}</span></div>; })}</div></div>;
 }
 
 export function OpportunityPage() {
   const { opportunityId } = detailRoute.useParams(); const client = useQueryClient(); const detail = useQuery({ queryKey: ["opportunity", opportunityId], queryFn: () => fetchOpportunity(opportunityId) });
   const [edits, setEdits] = useState<DraftValues>(emptyDraftValues); const [hydratedFor, setHydratedFor] = useState<string | null>(null); const [runId, setRunId] = useState<string | null>(null);
-  useEffect(() => { if (!detail.data) return; setEdits(Object.fromEntries(draftFields.map((field) => [field.key, detail.data!.draft.fields[field.key].value?.toString() ?? ""])) as DraftValues); setHydratedFor(`${opportunityId}:${detail.data.draft.version}`); }, [detail.data, opportunityId]);
-  const save = useMutation({ mutationFn: () => patchDraft(opportunityId, { expectedVersion: detail.data!.draft.version, fields: Object.fromEntries(draftFields.map((field) => [field.key, { value: numericDraftKeys.includes(field.key) ? (edits[field.key] ? Number(edits[field.key]) : null) : edits[field.key], source: "user", revision: detail.data!.draft.fields[field.key].revision }])) }), onSuccess: () => client.invalidateQueries({ queryKey: ["opportunity", opportunityId] }), onError: (error) => { if (error instanceof ApiError && error.code === "version_conflict") void detail.refetch(); } });
-  const confirm = useMutation({ mutationFn: () => confirmDraft(opportunityId, detail.data!.draft.version), onSuccess: () => client.invalidateQueries({ queryKey: ["opportunity", opportunityId] }) }); const start = useMutation({ mutationFn: () => startScreening(opportunityId), onSuccess: (receipt) => { setRunId(receipt.resourceId); void client.invalidateQueries({ queryKey: ["opportunity", opportunityId] }); } });
+  const [draftEditing, setDraftEditing] = useState(false);
+  const savedDraft = useRef<NonNullable<typeof detail.data>["draft"] | null>(null);
+  useEffect(() => {
+    if (!detail.data || (draftEditing && hydratedFor === opportunityId)) return;
+    savedDraft.current = detail.data.draft;
+    setEdits(Object.fromEntries(draftFields.map((field) => [field.key, detail.data!.draft.fields[field.key].value?.toString() ?? ""])) as DraftValues);
+    setHydratedFor(opportunityId);
+  }, [detail.data, opportunityId, draftEditing, hydratedFor]);
+  const save = useMutation({ mutationFn: async () => {
+    const current = savedDraft.current ?? detail.data!.draft;
+    const saved = await patchDraft(opportunityId, { expectedVersion: current.version, fields: Object.fromEntries(draftFields.map((field) => [field.key, { value: numericDraftKeys.includes(field.key) ? (edits[field.key] ? Number(edits[field.key]) : null) : edits[field.key], source: "user", revision: current.fields[field.key].revision }])) });
+    savedDraft.current = saved;
+    client.setQueryData(["opportunity", opportunityId], { ...detail.data!, draft: saved });
+    const confirmed = await confirmDraft(opportunityId, saved.version);
+    savedDraft.current = confirmed;
+    client.setQueryData(["opportunity", opportunityId], { ...detail.data!, draft: confirmed });
+    void client.invalidateQueries({ queryKey: ["opportunity", opportunityId] });
+  } }); const start = useMutation({ mutationFn: () => startScreening(opportunityId), onSuccess: (receipt) => { setRunId(receipt.resourceId); void client.invalidateQueries({ queryKey: ["opportunity", opportunityId] }); } });
   useRunUpdates(runId, opportunityId);
   if (detail.isPending) return <main className="shell"><p role="status">加载中…</p></main>; if (detail.error || !detail.data) return <main className="shell"><ErrorNotice error={detail.error ?? new Error("岗位不存在")} /></main>;
-  const data = detail.data; const activeRun = data.runs.find((run) => run.id === runId) ?? data.runs[0]; const draftKey = `${opportunityId}:${data.draft.version}`;
-  return <main className="shell"><h1>{data.title ?? "岗位详情"}</h1><p className="subtitle">{data.company ?? "公司未知"} · {data.location ?? "地点未知"}</p><section className="draft-section"><h2>岗位草稿</h2><p>状态：{data.draft.status} · 版本 {data.draft.version}</p>{hydratedFor === draftKey ? <EditableDraft key={draftKey} values={edits} onChange={(patch) => setEdits((current) => ({ ...current, ...patch }))} defaultEditing={data.draft.status !== "confirmed"} /> : null}{data.draft.assumptions.map((item) => <p className="notice" key={item}>{item}</p>)}{data.draft.conflicts.map((item) => <p className="notice error" key={item.id}>字段 {item.field} 存在冲突：保留了用户值</p>)}<div className="actions"><button onClick={() => save.mutate()} disabled={save.isPending}>保存草稿</button><button onClick={() => confirm.mutate()} disabled={confirm.isPending || data.draft.status === "confirmed"}>确认草稿</button></div>{save.error || confirm.error ? <ErrorNotice error={save.error ?? confirm.error!} /> : null}</section><section><h2>匹配初筛</h2><button onClick={() => start.mutate()} disabled={data.draft.status !== "confirmed" || start.isPending}>开始初筛</button>{data.draft.status !== "confirmed" ? <p>确认草稿后才能开始。</p> : null}{activeRun ? <RunControls run={activeRun} onChanged={() => void detail.refetch()} /> : null}</section><section><h2>分析报告</h2>{data.reports.length === 0 ? <p>暂无报告。</p> : data.reports.map((report) => <ReportCard report={report} key={report.id} />)}</section></main>;
+  const data = detail.data; const selectedRun = data.runs.find((run) => run.id === runId) ?? data.runs[0];
+  const activeRun = selectedRun?.successorRunId ? data.runs.find((run) => run.id === selectedRun.successorRunId) ?? selectedRun : selectedRun;
+  const draftKey = opportunityId;
+  const reportNotes = [...new Set(data.reports.flatMap((report) => report.assumptions))];
+  return <main className="shell"><h1>{data.title ?? "岗位详情"}</h1><p className="subtitle">{data.company ?? "公司未知"} · {data.location ?? "地点未知"}</p><section className="draft-section"><h2>岗位草稿</h2><p>状态：{data.draft.status} · 版本 {data.draft.version}</p>{hydratedFor === draftKey ? <EditableDraft key={draftKey} values={edits} onChange={(patch) => setEdits((current) => ({ ...current, ...patch }))} defaultEditing={data.draft.status !== "confirmed"} onComplete={() => save.mutateAsync()} pending={save.isPending} onEditingChange={setDraftEditing} /> : null}{data.draft.assumptions.map((item) => <p className="notice" key={item}>{item}</p>)}{data.draft.conflicts.map((item) => <p className="notice error" key={item.id}>字段 {item.field} 存在冲突：保留了用户值</p>)}{save.error ? <ErrorNotice error={save.error} /> : null}</section><section><h2>匹配初筛</h2><button onClick={() => start.mutate()} disabled={draftEditing || save.isPending || data.draft.status !== "confirmed" || start.isPending}>开始初筛</button>{data.draft.status !== "confirmed" ? <p>确认草稿后才能开始。</p> : null}{activeRun ? <RunControls key={activeRun.id} run={activeRun} onChanged={(nextRunId) => { if (nextRunId) setRunId(nextRunId); void detail.refetch(); }} /> : null}</section><section><h2>分析报告</h2>{reportNotes.length ? <div className="report-notes"><h3>补充说明</h3><blockquote>{reportNotes.map((item) => <p key={item}>{item}</p>)}</blockquote></div> : null}{data.reports.length === 0 ? <p>暂无报告。</p> : data.reports.map((report) => <ReportCard report={report} key={report.id} />)}</section></main>;
 }
 
 function useRunUpdates(runId: string | null, opportunityId: string) { const client = useQueryClient(); useEffect(() => { if (!runId) return; const events = new RunEventClient(runId); events.connect(() => { void client.invalidateQueries({ queryKey: ["run", runId] }); void client.invalidateQueries({ queryKey: ["opportunity", opportunityId] }); }, () => undefined); return () => events.disconnect(); }, [client, opportunityId, runId]); }
-export function RunControls({ run, onChanged }: { run: Awaited<ReturnType<typeof fetchRun>>; onChanged(): void }) { const query = useQuery({ queryKey: ["run", run.id], queryFn: () => fetchRun(run.id), initialData: run, refetchInterval: (state) => state.state.data && ["queued", "running", "cancelling"].includes(state.state.data.status) ? 800 : false }); const current = query.data; return <div className="card"><p>Run：{current.status}{current.currentStage ? ` · ${current.currentStage}` : ""}</p>{["queued", "running"].includes(current.status) ? <button className="secondary" onClick={() => void cancelRun(current.id).then(onChanged)}>取消</button> : null}{current.status === "failed" ? <button onClick={() => void retryRun(current.id).then(onChanged)}>重试为新 Run</button> : null}</div>; }
-export function ReportCard({ report }: { report: ScreeningReport }) { return <article className={`report ${report.status}`}><div className="report-head"><h3>{report.recommendation}</h3><span>{report.status} · {report.confidence} · {report.modelLabel}</span></div>{report.assumptions.map((item) => <p className="notice" key={item}>{item}</p>)}{report.matches.length ? <section><h4>匹配点</h4><ul>{report.matches.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}{report.risks.length ? <section><h4>总体风险</h4><ul>{report.risks.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}{report.unknowns.length ? <section><h4>待核验项</h4><ul>{report.unknowns.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}<div className="dimensions">{DIMENSION_IDS.map((id) => { const item = report.dimensions[id]; return <section className="dimension" key={id}><strong>{labels[id]}</strong><span>{item.verdict} / {item.confidence}</span>{item.risks.map((risk) => <small key={risk}>风险：{risk}</small>)}{item.unknowns.map((unknown) => <small key={unknown}>待核验：{unknown}</small>)}{item.claimIds.length ? <small>Claim：{item.claimIds.join(", ")}</small> : null}</section>; })}</div>{report.rules.length ? <p>规则命中：{report.rules.join("；")}</p> : null}{report.claims.length ? <details><summary>证据 Claims</summary>{report.claims.map((claim) => <article className="dimension" key={claim.id}><strong>{claim.statement}</strong><small>{claim.status} · {claim.confidence}</small><small>简历证据：{claim.resumeEvidence}</small><small>JD 证据：{claim.jobEvidence}</small></article>)}</details> : null}</article>; }
+export function RunControls({ run, onChanged }: { run: Awaited<ReturnType<typeof fetchRun>>; onChanged(nextRunId?: string): void }) {
+  const retry = useMutation({ mutationFn: () => retryRun(run.id), onSuccess: (receipt) => onChanged(receipt.resourceId) });
+  const cancel = useMutation({ mutationFn: () => cancelRun(run.id), onSuccess: () => onChanged() });
+  const query = useQuery({ queryKey: ["run", run.id], queryFn: () => fetchRun(run.id), initialData: run, refetchInterval: (state) => state.state.data && ["queued", "running", "cancelling"].includes(state.state.data.status) ? 800 : false });
+  const current = query.data;
+  const currentIndex = Math.max(0, screeningStages.findIndex((stage) => stage.id === current.currentStage));
+  const completed = current.status === "completed";
+  const activeStage = screeningStages[currentIndex]!;
+  const stepNumber = completed ? screeningStages.length : currentIndex + 1;
+  const progress = completed ? 100 : current.status === "queued" && !current.currentStage ? 0 : Math.round((stepNumber / screeningStages.length) * 100);
+  const statusLabel = ({ queued: "等待开始", running: "分析中", waiting: "等待中", needs_attention: "需要处理", cancelling: "正在取消", cancelled: "已取消", completed: "已完成", failed: "执行失败", superseded: "已被新分析替代" } as const)[current.status];
+  const title = completed ? "匹配分析已完成" : current.status === "failed" ? `分析在「${activeStage.label}」阶段失败` : current.status === "cancelled" ? "匹配分析已取消" : current.status === "queued" && !current.currentStage ? "正在准备匹配分析" : activeStage.title;
+  const description = completed ? "分析报告已经生成，可以在下方查看完整结果。" : current.status === "failed" ? "你可以创建一个新分析，并保留本次失败记录。" : current.status === "cancelled" ? "本次分析没有生成报告，可以重新开始。" : current.status === "queued" && !current.currentStage ? "任务已经进入队列，即将开始检查岗位条件。" : activeStage.description;
+  const modelLabel = current.modelConfig?.provider === "deepseek" ? `DeepSeek · ${current.modelConfig.model}` : "本地演示模型";
+
+  return <div className={`card run-progress-card ${current.status}`} aria-live="polite">
+    <div className="run-progress-head">
+      <div>
+        <span className="run-status"><i aria-hidden="true" />{statusLabel}</span>
+        <h3>{title}</h3>
+        <p>{description}</p>
+      </div>
+      <span className="run-step-count">第 {stepNumber} / {screeningStages.length} 步</span>
+    </div>
+    <div className="run-progress-track" role="progressbar" aria-label="初筛进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+      <span style={{ width: `${progress}%` }} />
+    </div>
+    <ol className="run-stage-list" aria-label="初筛阶段">
+      {screeningStages.map((stage, index) => {
+        const state = completed || index < currentIndex ? "complete" : index === currentIndex ? current.status === "failed" ? "failed" : "active" : "pending";
+        return <li className={state} key={stage.id} aria-current={state === "active" ? "step" : undefined}><span aria-hidden="true">{state === "complete" ? "✓" : index + 1}</span><small>{stage.label}</small></li>;
+      })}
+    </ol>
+    <div className="run-progress-meta"><span>模型：{modelLabel}</span><span>分析编号：{current.id.slice(0, 8)}</span></div>
+    {retry.error || cancel.error ? <ErrorNotice error={retry.error ?? cancel.error!} /> : null}
+    {["queued", "running"].includes(current.status) ? <div className="run-actions"><button className="secondary" disabled={cancel.isPending} onClick={() => cancel.mutate()}>取消分析</button></div> : null}
+    {current.status === "failed" ? <div className="run-actions"><button disabled={retry.isPending} onClick={() => retry.mutate()}>重新分析</button></div> : null}
+  </div>;
+}
+export function ReportCard({ report }: { report: ScreeningReport }) { return <details className={`report ${report.status}`}><summary className="report-head"><h3>{recommendationLabels[report.recommendation]}</h3><span>{reportStatusLabels[report.status]} · {confidenceLabels[report.confidence]} · {report.modelLabel}</span><i className="report-chevron" aria-hidden="true"><ChevronIcon /></i></summary>{report.matches.length ? <section><h4>匹配点</h4><ul>{report.matches.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}{report.risks.length ? <section><h4>总体风险</h4><ul>{report.risks.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}<div className="dimensions">{DIMENSION_IDS.map((id) => { const item = report.dimensions[id]; return <section className="dimension" key={id}><strong>{labels[id]}</strong><span>{verdictLabels[item.verdict]} / {confidenceLabels[item.confidence]}</span>{item.risks.map((risk) => <small key={risk}>风险：{risk}</small>)}{item.unknowns.map((unknown) => <small key={unknown}>待核验：{unknown}</small>)}{item.claimIds.length ? <small>证据：{item.claimIds.join(", ")}</small> : null}</section>; })}</div>{report.rules.length ? <p>规则命中：{report.rules.join("；")}</p> : null}{report.claims.length ? <details className="claims"><summary>证据</summary>{report.claims.map((claim) => <article className="dimension" key={claim.id}><strong>{claim.statement}</strong><small>{claimStatusLabels[claim.status]} · {confidenceLabels[claim.confidence]}</small><small>简历证据：{claim.resumeEvidence}</small><small>JD 证据：{claim.jobEvidence}</small></article>)}</details> : null}</details>; }
 function ErrorNotice({ error }: { error: unknown }) { return <div className="notice error" role="alert">{error instanceof ApiError ? `${error.code}：${error.message}` : error instanceof Error ? error.message : "操作失败"}</div>; }

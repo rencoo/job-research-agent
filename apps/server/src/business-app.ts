@@ -1,17 +1,26 @@
 import { createHash } from "node:crypto";
 import {
-  ClaimSchema, ConfirmDraftSchema, DIMENSION_IDS, DraftPatchSchema, ExtractedJobSchema, ImportBatchInputSchema,
+  ConfirmDraftSchema, DIMENSION_IDS, DraftPatchSchema, ImportBatchInputSchema,
+  LOCAL_MODEL_CONFIG,
   ProfileInputSchema, ProfileSchema, type DraftField, type ImportBatch, type JobDraft,
-  type OpportunityDetail, type Profile, type ResearchClaim, type ResearchRun, type ScreeningReport,
+  type ExtractedJob, type ModelInvocationConfig, type OpportunityDetail, type Profile, type ResearchClaim,
+  type ResearchRun, type ScreeningReport,
 } from "@job-research/contracts";
 import type {
   CommandReceipt, IngestionApplication, OpportunityApplication, ProfileApplication,
   ResearchApplication, UseCaseResult,
 } from "@job-research/application";
 import { aggregateVerdict, BusinessRuleError, canConfirmDraft, compensationPackage, normalizeWeights, recommend, type Verdict } from "@job-research/domain";
-import { z } from "zod";
 import { BusinessRepository, JobRepository, PersistenceConflictError } from "@job-research/database";
-import type { ModelGateway } from "@job-research/model-gateway";
+import {
+  ModelGatewayError,
+  ModelGatewayResolver,
+  type ModelGateway,
+} from "@job-research/model-gateway";
+import {
+  buildExtractionModelRequest,
+  buildScreeningModelRequest,
+} from "./model-prompts";
 
 const ok = <T>(value: T): UseCaseResult<T> => ({ ok: true, value });
 const fail = <T>(code: "validation" | "not_found" | "version_conflict" | "domain_precondition" | "infrastructure_unavailable", message: string, retryable = false): UseCaseResult<T> => ({ ok: false, error: { code, message, retryable } });
@@ -57,7 +66,12 @@ export class LocalProfileApplication implements ProfileApplication {
 }
 
 export class LocalIngestionApplication implements IngestionApplication {
-  constructor(private readonly repository: BusinessRepository, private readonly jobs: JobRepository, private readonly now = () => new Date()) {}
+  constructor(
+    private readonly repository: BusinessRepository,
+    private readonly jobs: JobRepository,
+    private readonly now = () => new Date(),
+    private readonly modelConfig: ModelInvocationConfig = LOCAL_MODEL_CONFIG,
+  ) {}
   async importBatch(raw: unknown, idempotencyKey: string): Promise<UseCaseResult<CommandReceipt>> {
     const parsed = ImportBatchInputSchema.safeParse(raw);
     if (!parsed.success || !idempotencyKey.trim()) return fail("validation", parsed.success ? "Idempotency-Key is required" : parsed.error.issues[0]?.message ?? "Invalid batch");
@@ -76,7 +90,7 @@ export class LocalIngestionApplication implements IngestionApplication {
         const jobId = urlOnly ? null : id();
         return { id: itemId, opportunityId, text: text.trim(), status: urlOnly ? "needs_input" : "queued", jobId };
       });
-      for (const item of items) if (item.jobId) this.jobs.create({ id: item.jobId, type: "extract-job-draft", payload: { importItemId: item.id }, now });
+      for (const item of items) if (item.jobId) this.jobs.create({ id: item.jobId, type: "extract-job-draft", payload: { importItemId: item.id, modelConfig: this.modelConfig }, now });
       this.repository.createImport({ batchId, now, items });
       const receipt = { id: batchId, resourceId: batchId, created: true };
       this.repository.saveIdempotency({ key: idempotencyKey, commandType: "import-batch", aggregateId: batchId, payloadHash, receipt, now });
@@ -90,7 +104,7 @@ export class LocalIngestionApplication implements IngestionApplication {
     if (item.status !== "failed") return fail("domain_precondition", "Only failed items can be retried");
     return translate(() => this.repository.transaction(() => {
       const now = this.now(); const jobId = id();
-      this.jobs.create({ id: jobId, type: "extract-job-draft", payload: { importItemId: item.id }, now });
+      this.jobs.create({ id: jobId, type: "extract-job-draft", payload: { importItemId: item.id, modelConfig: this.modelConfig }, now });
       this.repository.updateImportItem(item.id, "queued", now, { jobId, error: null });
       return { id: jobId, resourceId: item.id, created: true };
     }));
@@ -131,26 +145,41 @@ export class LocalOpportunityApplication implements OpportunityApplication {
   }
 }
 
-export function createExtractionHandler(repository: BusinessRepository, model: ModelGateway, now = () => new Date()) {
-  return async ({ job, signal, reportProgress }: { job: { id: string; input: unknown }; signal: AbortSignal; reportProgress(value: number): void }) => {
-    const importItemId = (job.input as { importItemId?: string }).importItemId;
+type ModelSource = ModelGateway | ModelGatewayResolver;
+
+function resolveModel(source: ModelSource, config: ModelInvocationConfig): ModelGateway {
+  return source instanceof ModelGatewayResolver ? source.resolve(config) : source;
+}
+
+export function createExtractionHandler(repository: BusinessRepository, models: ModelSource, now = () => new Date()) {
+  return async ({ job, signal, reportProgress }: { job: { id: string; input: unknown; attempts?: number; maxAttempts?: number }; signal: AbortSignal; reportProgress(value: number): void }) => {
+    const payload = job.input as { importItemId?: string; modelConfig?: ModelInvocationConfig };
+    const importItemId = payload.importItemId;
     if (!importItemId) throw new Error("Missing import item");
     const item = repository.getImportItem(importItemId);
     if (!item) throw new Error("Import item not found");
+    const modelConfig = payload.modelConfig ?? LOCAL_MODEL_CONFIG;
+    const model = resolveModel(models, modelConfig);
     repository.updateImportItem(item.id, "extracting", now()); reportProgress(20);
     try {
-      const extracted = await model.generateStructured({ prompt: "从本地 JD 文本抽取结构化字段", metadata: { task: "extract-job-draft", input: item.sourceText }, validate: (value) => ExtractedJobSchema.parse(value), signal });
-      repository.transaction(() => mergeExtraction(repository, item.opportunityId, extracted, now()));
+      const extracted = await model.generateStructured(buildExtractionModelRequest(
+        item.sourceText,
+        signal,
+        modelConfig.promptVersions.extractJobDraft,
+      ));
+      repository.transaction(() => mergeExtraction(repository, item.opportunityId, extracted, modelConfig, now()));
       repository.updateImportItem(item.id, "ready", now()); reportProgress(100);
       return { resultRef: item.opportunityId };
     } catch (error) {
-      repository.updateImportItem(item.id, "failed", now(), { error: { code: "extraction_failed", message: "岗位抽取失败", retryable: true } });
+      const retryable = error instanceof ModelGatewayError ? error.retryable : false;
+      const willRetry = retryable && (job.attempts ?? 1) < (job.maxAttempts ?? 3);
+      repository.updateImportItem(item.id, willRetry ? "queued" : "failed", now(), { error: { code: "extraction_failed", message: "岗位抽取失败", retryable } });
       throw error;
     }
   };
 }
 
-function mergeExtraction(repository: BusinessRepository, opportunityId: string, extracted: ReturnType<typeof ExtractedJobSchema.parse>, now: Date): void {
+function mergeExtraction(repository: BusinessRepository, opportunityId: string, extracted: ExtractedJob, modelConfig: ModelInvocationConfig, now: Date): void {
   const current = repository.getDraft(opportunityId)!;
   const baseRevision = current.extractionRevision;
   const fields = { ...current.fields };
@@ -165,12 +194,17 @@ function mergeExtraction(repository: BusinessRepository, opportunityId: string, 
     }
     fields[key as keyof typeof fields] = { value, source: value == null ? "unknown" : source, revision: baseRevision + 1 };
   }
-  const next = { ...current, fields, assumptions: [...new Set(assumptions)], extractionRevision: baseRevision + 1, version: current.version + 1 };
+  const next = { ...current, fields, assumptions: [...new Set(assumptions)], extractionModel: modelConfig, extractionRevision: baseRevision + 1, version: current.version + 1 };
   repository.saveDraft(next, current.version, now);
 }
 
 export class LocalResearchApplication implements ResearchApplication {
-  constructor(private readonly repository: BusinessRepository, private readonly jobs: JobRepository, private readonly now = () => new Date()) {}
+  constructor(
+    private readonly repository: BusinessRepository,
+    private readonly jobs: JobRepository,
+    private readonly now = () => new Date(),
+    private readonly modelConfig: ModelInvocationConfig = LOCAL_MODEL_CONFIG,
+  ) {}
   async startScreening(opportunityId: string, idempotencyKey: string): Promise<UseCaseResult<CommandReceipt>> {
     if (!idempotencyKey.trim()) return fail("validation", "Idempotency-Key is required");
     return translate(() => this.repository.transaction(() => {
@@ -186,8 +220,8 @@ export class LocalResearchApplication implements ResearchApplication {
       const now = this.now(); const profileSnapshotId = id(); const jobSnapshotId = id(); const runId = id(); const jobId = id();
       this.repository.createProfileSnapshot(profileSnapshotId, profile, now);
       this.repository.createJobSnapshot(jobSnapshotId, opportunityId, opportunity.draft, opportunity.sourceText, now);
-      this.jobs.create({ id: jobId, type: "screen-opportunity", payload: { runId }, now });
-      const run: ResearchRun = { id: runId, opportunityId, jobId, status: "queued", currentStage: null, parentRunId: null, successorRunId: null, reportId: null, createdAt: now.toISOString(), updatedAt: now.toISOString() };
+      this.jobs.create({ id: jobId, type: "screen-opportunity", payload: { runId, modelConfig: this.modelConfig }, now });
+      const run: ResearchRun = { id: runId, opportunityId, jobId, status: "queued", currentStage: null, parentRunId: null, successorRunId: null, reportId: null, modelConfig: this.modelConfig, createdAt: now.toISOString(), updatedAt: now.toISOString() };
       this.repository.createRun(run, { profile: profileSnapshotId, job: jobSnapshotId });
       const receipt = { id: runId, resourceId: runId, created: true };
       this.repository.saveIdempotency({ key: idempotencyKey, commandType: "start-screening", aggregateId: opportunityId, payloadHash, receipt, now });
@@ -204,11 +238,15 @@ export class LocalResearchApplication implements ResearchApplication {
   async retryFailed(runId: string): Promise<UseCaseResult<CommandReceipt>> {
     const run = this.repository.getRun(runId); if (!run) return fail("not_found", "Run not found");
     if (run.status !== "failed") return fail("domain_precondition", "Only failed runs can be retried");
+    if (run.successorRunId) return ok({ id: run.successorRunId, resourceId: run.successorRunId, created: false });
     return translate(() => this.repository.transaction(() => {
+      const current = this.repository.getRun(runId);
+      if (current?.successorRunId) return { id: current.successorRunId, resourceId: current.successorRunId, created: false };
       const now = this.now(); const childId = id(); const jobId = id();
       const row = this.repository.sqlite.prepare("SELECT profile_snapshot_id,job_snapshot_id FROM research_runs WHERE id=?").get(runId) as { profile_snapshot_id: string; job_snapshot_id: string };
-      this.jobs.create({ id: jobId, type: "screen-opportunity", payload: { runId: childId }, now });
-      this.repository.createRun({ ...run, id: childId, jobId, status: "queued", currentStage: null, parentRunId: run.id, successorRunId: null, reportId: null, createdAt: now.toISOString(), updatedAt: now.toISOString() }, { profile: row.profile_snapshot_id, job: row.job_snapshot_id });
+      const modelConfig = run.modelConfig ?? LOCAL_MODEL_CONFIG;
+      this.jobs.create({ id: jobId, type: "screen-opportunity", payload: { runId: childId, modelConfig }, now });
+      this.repository.createRun({ ...run, id: childId, jobId, status: "queued", currentStage: null, parentRunId: run.id, successorRunId: null, reportId: null, modelConfig, createdAt: now.toISOString(), updatedAt: now.toISOString() }, { profile: row.profile_snapshot_id, job: row.job_snapshot_id });
       this.repository.updateRun(run.id, { successorRunId: childId }, now);
       return { id: childId, resourceId: childId, created: true };
     }));
@@ -218,12 +256,14 @@ export class LocalResearchApplication implements ResearchApplication {
 
 const SCREENING_STAGES = ["constraint_check", "semantic_match", "claim_validation", "recommendation_policy", "screening_report"] as const;
 
-export function createScreeningHandler(repository: BusinessRepository, model: ModelGateway, now = () => new Date()) {
-  return async ({ job, signal, reportProgress }: { job: { input: unknown }; signal: AbortSignal; reportProgress(value: number): void }) => {
+export function createScreeningHandler(repository: BusinessRepository, models: ModelSource, now = () => new Date()) {
+  return async ({ job, signal, reportProgress }: { job: { input: unknown; attempts?: number; maxAttempts?: number }; signal: AbortSignal; reportProgress(value: number): void }) => {
     const runId = (job.input as { runId?: string }).runId;
     if (!runId) throw new Error("Missing run id");
     const context = repository.getRunContext(runId);
     if (!context) throw new Error("Run context not found");
+    const modelConfig = context.run.modelConfig ?? LOCAL_MODEL_CONFIG;
+    const model = resolveModel(models, modelConfig);
     repository.updateRun(runId, { status: "running" }, now());
     try {
       const values: Record<string, unknown> = {};
@@ -234,7 +274,7 @@ export function createScreeningHandler(repository: BusinessRepository, model: Mo
         if (checkpoint !== null) values[stage] = checkpoint;
         else {
           repository.updateRun(runId, { currentStage: stage }, now());
-          values[stage] = await executeStage(stage, context, values, model, repository, signal, now());
+          values[stage] = await executeStage(stage, context, values, model, modelConfig, repository, signal, now());
           repository.saveCheckpoint(runId, stage, values[stage], now());
         }
         reportProgress(Math.round(((index + 1) / SCREENING_STAGES.length) * 100));
@@ -249,6 +289,8 @@ export function createScreeningHandler(repository: BusinessRepository, model: Mo
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         repository.updateRun(runId, { status: "cancelled" }, now());
+      } else if (error instanceof ModelGatewayError && error.retryable && (job.attempts ?? 1) < (job.maxAttempts ?? 3)) {
+        repository.updateRun(runId, { status: "queued", error: null }, now());
       } else {
         repository.updateRun(runId, { status: "failed", error: { code: "screening_failed", message: "初筛执行失败" } }, now());
         repository.appendRunEvent(runId, "run_failed", { code: "screening_failed", message: "初筛执行失败" }, now());
@@ -261,7 +303,8 @@ export function createScreeningHandler(repository: BusinessRepository, model: Mo
 async function executeStage(
   stage: (typeof SCREENING_STAGES)[number],
   context: NonNullable<ReturnType<BusinessRepository["getRunContext"]>>,
-  values: Record<string, unknown>, model: ModelGateway, repository: BusinessRepository, signal: AbortSignal, clock: Date,
+  values: Record<string, unknown>, model: ModelGateway, modelConfig: ModelInvocationConfig,
+  repository: BusinessRepository, signal: AbortSignal, clock: Date,
 ): Promise<unknown> {
   const profile = context.profileSnapshot.profile;
   const jobText = context.jobSnapshot.sourceText;
@@ -273,7 +316,12 @@ async function executeStage(
     };
   }
   if (stage === "semantic_match") {
-    const generated = await model.generateStructured({ prompt: "基于冻结快照生成岗位匹配证据", metadata: { task: "screen-opportunity", input: { resumeText: profile.resumeText, jobText } }, validate: (value) => z.array(ClaimSchema).parse(value), signal });
+    const generated = await model.generateStructured(buildScreeningModelRequest(
+      { resumeText: profile.resumeText, jobText },
+      model.descriptor,
+      signal,
+      modelConfig.promptVersions.screenOpportunity,
+    ));
     return generated.map((claim) => ({ ...claim, id: `${context.run.id}-${claim.id}` }));
   }
   if (stage === "claim_validation") {
@@ -314,12 +362,22 @@ async function executeStage(
     risks: [...(values.constraint_check as { warnings: string[]; blockingFlags: string[] }).warnings, ...(values.constraint_check as { blockingFlags: string[] }).blockingFlags],
     unknowns: Object.values(dimensions).flatMap((item) => item.unknowns), rules: policy.rules,
     claims, assumptions: [...context.jobSnapshot.draft.assumptions, ...(policy.compensation?.assumed ? ["薪资总包按 12 薪估算，置信度已降低"] : [])],
-    modelLabel: "本地演示模型", createdAt: clock.toISOString(),
+    modelLabel: model.descriptor.label, modelConfig, createdAt: clock.toISOString(),
   } satisfies ScreeningReport;
 }
 
 function numberValue(value: unknown): number | null { return typeof value === "number" && Number.isFinite(value) ? value : null; }
 
 export function validateClaims(claims: ResearchClaim[], resumeText: string, jobText: string): ResearchClaim[] {
-  return claims.map((claim) => ({ ...claim, status: resumeText.toLowerCase().includes(claim.resumeEvidence.toLowerCase()) && jobText.toLowerCase().includes(claim.jobEvidence.toLowerCase()) ? "supported" : "rejected" }));
+  return claims.map((claim) => {
+    const resumeEvidence = claim.resumeEvidence.trim();
+    const jobEvidence = claim.jobEvidence.trim();
+    const placeholderEvidence = resumeEvidence.includes("[已移除") || jobEvidence.includes("[已移除");
+    const supported = !placeholderEvidence
+      && resumeEvidence.length > 0
+      && jobEvidence.length > 0
+      && resumeText.toLowerCase().includes(resumeEvidence.toLowerCase())
+      && jobText.toLowerCase().includes(jobEvidence.toLowerCase());
+    return { ...claim, status: supported ? "supported" : "rejected" };
+  });
 }

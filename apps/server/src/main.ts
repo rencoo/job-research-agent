@@ -1,22 +1,27 @@
 import { applyMigrations, BusinessRepository, JobRepository, openDatabase } from "@job-research/database";
-import { LocalDemoModel } from "@job-research/model-gateway";
+import { createModelRuntimeFromEnv } from "@job-research/model-gateway";
 import { buildServer } from "./app";
 import { HandlerRegistry, LocalJobWorker } from "./worker";
 import { createExtractionHandler, createScreeningHandler, LocalIngestionApplication, LocalOpportunityApplication, LocalProfileApplication, LocalResearchApplication } from "./business-app";
+import { modelConfigFromDescriptor } from "./model-prompts";
+import { loadRepositoryEnv } from "./local-env";
+
+loadRepositoryEnv();
 
 const connection = openDatabase();
 applyMigrations(connection.sqlite);
 
 const repository = new JobRepository(connection.sqlite);
 const businessRepository = new BusinessRepository(connection.sqlite);
-const model = new LocalDemoModel();
+const modelRuntime = createModelRuntimeFromEnv(process.env);
+const modelConfig = modelConfigFromDescriptor(modelRuntime.selected.descriptor);
 const profile = new LocalProfileApplication(businessRepository);
-const ingestion = new LocalIngestionApplication(businessRepository, repository);
+const ingestion = new LocalIngestionApplication(businessRepository, repository, undefined, modelConfig);
 const opportunities = new LocalOpportunityApplication(businessRepository);
-const research = new LocalResearchApplication(businessRepository, repository);
+const research = new LocalResearchApplication(businessRepository, repository, undefined, modelConfig);
 const registry = new HandlerRegistry()
-  .register("extract-job-draft", createExtractionHandler(businessRepository, model))
-  .register("screen-opportunity", createScreeningHandler(businessRepository, model));
+  .register("extract-job-draft", createExtractionHandler(businessRepository, modelRuntime.resolver))
+  .register("screen-opportunity", createScreeningHandler(businessRepository, modelRuntime.resolver));
 const worker = new LocalJobWorker({ repository, registry });
 const app = buildServer({
   repository,

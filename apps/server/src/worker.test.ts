@@ -116,7 +116,12 @@ describe("LocalJobWorker", () => {
     const model = new FakeModel({ type: "success", value: { ok: true }, delayMs: 1_000 });
     const registry = new HandlerRegistry().register("model", async ({ signal }) => {
       await model.generateStructured({
-        prompt: "work",
+        task: "test",
+        promptVersion: "test/v1",
+        instructions: "work",
+        input: {},
+        schemaName: "test_result",
+        schema: { type: "object" },
         signal,
         validate: (value) => value as { ok: boolean },
       });
