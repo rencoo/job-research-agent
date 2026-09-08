@@ -87,3 +87,17 @@ pnpm test:deepseek-live
 - 不自动计算地图距离或实际通勤时间
 - 不自动投递、开聊或联系招聘方
 - 不支持 Markdown/ZIP 导出、浏览器插件、桌面安装包或云同步
+
+### 公司与岗位深研
+
+先完成当前 JD/画像的初筛，再在岗位详情点击「开始深度研究」。身份不明确时可选择候选、补充公司全名/官网，或跳过并得到部分报告。报告可展开原文证据、来源网址与读取时间；「刷新公司并重新研究」忽略旧公司缓存。
+
+默认 `JRA_RESEARCH_MODE=demo` 完全离线，使用明确标注的合成公司，不能据此判断真实雇主。真实研究设置 `JRA_RESEARCH_MODE=live`、`JRA_MODEL_PROVIDER=deepseek`、`DEEPSEEK_API_KEY` 和 `TAVILY_API_KEY`，重启服务。缺失配置直接报错。研究搜索只发送公司/岗位问题，模型仅接收当前阶段必要的脱敏资料。不要提交真实 Key。
+
+公开 JS 页面后备需要 Chromium：首次运行 `pnpm --filter @job-research/research-tools exec playwright install chromium`。未安装浏览器或页面受限时，记录读取失败并生成部分报告，不绕过登录/验证码。
+
+研究按主题复用 7 天内的公司快照；可取消、失败重试，重启复用已保存结果。每次研究预算为 100 次工具/模型调用、30 分钟执行时间，继承到失败重试；外部请求在异常中断时仍可能重复计费。网页抓取不保证完整；未知项应向 HR/面试核实。
+
+显式网络工具 smoke（会产生 Tavily 调用，不调用真实模型）：`JRA_RUN_RESEARCH_LIVE=1 pnpm test:research-live`。它只检查搜索和单页读取；默认测试使用 FakeSearch/FakePageReader/合成模型，不能替代真实研究质量评估。真实模型评测需另行显式执行，不能把离线测试通过解释为线上事实可靠性已验证。
+
+深研迁移新增独立表，旧初筛继续可读；已有数据库发生新迁移前保存 SQLite 备份至数据目录 `backups/`，保留最近 5 份。回滚旧代码前恢复对应备份。

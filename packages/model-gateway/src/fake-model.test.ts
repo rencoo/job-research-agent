@@ -109,7 +109,42 @@ describe("DeepSeekModel", () => {
     await expect(model.generateStructured(request())).rejects.toMatchObject({ code, retryable: false });
   });
 
+  it("adapts nested URI formats without weakening local validation or mutating the schema", async () => {
+    const schema = { type: "object", properties: { website: { anyOf: [{ type: "string", format: "uri" }, { type: "null" }] }, email: { type: "string", format: "email" } } };
+    const original = structuredClone(schema);
+    const model = new DeepSeekModel({ apiKey: "test", client: client(async body => {
+      const sent = (body.text as { format: { schema: typeof schema } }).format.schema;
+      expect(sent.properties.website.anyOf[0]).toEqual({ type: "string" });
+      expect(sent.properties.email.format).toBe("email");
+      return { output_text: JSON.stringify({ website: "not-a-url" }) };
+    }) });
+    await expect(model.generateStructured(request({ schema, validate: value => {
+      new URL((value as { website: string }).website);
+      return { message: "valid" };
+    } }))).rejects.toMatchObject({ code: "deepseek_schema_invalid" });
+    expect(schema).toEqual(original);
+  });
+
+  it("keeps bounded validation paths and codes without leaking values or custom messages", async () => {
+    const model = new DeepSeekModel({ apiKey: "test", client: client(async () => ({ output_text: "{}" })) });
+    const error = await model.generateStructured(request({
+      schema: { type: "object", properties: { claims: { type: "array", items: { type: "object", properties: { confidence: { type: "string" } } } } } },
+      validate: () => { throw { issues: [
+        { path: ["claims", 0, "confidence"], code: "invalid_type", expected: "string", input: "private JD", message: "secret response" },
+        { path: ["private key"], code: "custom", message: "private resume" },
+      ] }; },
+    })).catch(value => value);
+    expect(error.validation).toEqual({ task: "test", schemaName: "test_message", issues: [
+      { path: ["claims", 0, "confidence"], code: "invalid_type", expected: "string" },
+      { path: ["[redacted]"], code: "custom" },
+    ] });
+    expect(JSON.stringify(error)).not.toMatch(/private|secret/);
+  });
+
   it.each([
+    [400, "deepseek_request_invalid", false],
+    [422, "deepseek_request_invalid", false],
+    [404, "deepseek_not_found", false],
     [401, "deepseek_auth_failed", false],
     [429, "deepseek_rate_limited", true],
     [500, "deepseek_unavailable", true],

@@ -1,5 +1,5 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readdirSync, readFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { resolve, dirname, basename } from "node:path";
 import type Database from "better-sqlite3";
 
 const defaultMigrationsDirectory = resolve(import.meta.dirname, "../migrations");
@@ -24,6 +24,15 @@ export function applyMigrations(
     .filter((file) => file.endsWith(".sql"))
     .sort();
   const newlyApplied: string[] = [];
+  if (applied.length && migrationFiles.some(file => !appliedSet.has(file)) && sqlite.name !== ":memory:") {
+    const backupDir = resolve(dirname(sqlite.name), "backups"); mkdirSync(backupDir, { recursive: true });
+    const prefix = `${basename(sqlite.name)}.`;
+    const backupPath = resolve(backupDir, `${prefix}${Date.now()}.sqlite`);
+    sqlite.prepare("VACUUM INTO ?").run(backupPath);
+    const backups = readdirSync(backupDir).filter(file => file.startsWith(prefix) && file.endsWith(".sqlite")).sort().reverse();
+    for (const file of backups.slice(5)) unlinkSync(resolve(backupDir, file));
+  }
+
 
   for (const version of migrationFiles) {
     if (appliedSet.has(version)) continue;

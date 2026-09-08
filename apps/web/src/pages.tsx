@@ -1,3 +1,4 @@
+import { DeepResearchPanel } from "./deep-research-panel";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -103,8 +104,19 @@ function EditablePreferences({ values, onChange }: { values: PreferenceValues; o
     onKeyDown: (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => { if (event.key === "Escape") { event.preventDefault(); cancelEditing(); } else submitOnShortcut(event); },
     required: field.key === "targetRoles",
   });
-  if (editing) return <div className="editable-field editing"><div className="grid">{preferenceFields.map((field) => <label key={field.key}>{field.label}{field.control === "textarea" ? <textarea {...bindField(field)} /> : <input type={field.control === "number" ? "number" : "text"} {...bindField(field)} />}</label>)}</div><div className="inline-edit-actions"><button type="button" className="text-button" onClick={cancelEditing}>取消</button><button type="button" className="secondary compact-button" onClick={() => setEditing(false)}>完成</button></div></div>;
-  return <div className="editable-preview preferences-preview"><button type="button" className="edit-affordance" aria-label="编辑分析偏好" onClick={beginEditing}><PencilIcon /><span>编辑</span></button><div className="grid">{preferenceFields.map((field) => { const items = splitLines(values[field.key]); const text = previewText(values[field.key]); return <div className="form-field" key={field.key}><span className="field-label">{field.label}</span>{field.key === "targetRoles" && items.length ? <div className="role-tags">{items.map((role) => <span key={role}>{role}</span>)}</div> : <span className={items.length ? "preview-value" : "preview-value empty"} title={items.length ? text : undefined}>{text}</span>}</div>; })}</div></div>;
+  const groups = [
+    { title: "方向与待遇", description: "希望从事什么工作，以及地点与薪资期待。", fields: preferenceFields.slice(0, 6) },
+    { title: "条件与底线", description: "区分必须满足、优先考虑和需要排除的条件。", fields: preferenceFields.slice(6) },
+  ];
+  return <div className={editing ? "editable-field editing profile-preferences" : "profile-preferences"}>
+    <div className="preferences-toolbar"><span>求职条件</span>{editing ? <div className="inline-edit-actions"><button type="button" className="text-button" onClick={cancelEditing}>取消</button><button type="button" className="secondary compact-button" onClick={() => setEditing(false)}>完成</button></div> : <button type="button" className="draft-edit-button" aria-label="编辑分析偏好" onClick={beginEditing}><PencilIcon /><span>编辑</span></button>}</div>
+    {groups.map((group) => <section className="preference-group" key={group.title}><h3>{group.title}</h3><p>{group.description}</p><div className="grid">{group.fields.map((field) => {
+      if (editing) return <label key={field.key}>{field.label}{field.control === "textarea" ? <textarea {...bindField(field)} /> : <input type={field.control === "number" ? "number" : "text"} {...bindField(field)} />}</label>;
+      const items = splitLines(values[field.key]); const text = previewText(values[field.key]);
+      const unit = field.key === "salaryMin" || field.key === "salaryMax" ? "元 / 月" : null;
+      return <div className="form-field" key={field.key}><span className="field-label">{field.label}</span>{field.key === "targetRoles" && items.length ? <div className="role-tags">{items.map((role) => <span key={role}>{role}</span>)}</div> : <div className="preference-value"><span className={items.length ? "preview-value" : "preview-value empty"} title={items.length ? text : undefined}>{text}</span>{items.length && unit ? <small>{unit}</small> : null}</div>}</div>;
+    })}</div></section>)}
+  </div>;
 }
 
 export function ProfilePage() {
@@ -113,7 +125,7 @@ export function ProfilePage() {
   useEffect(() => { if (!profile.data) return; setForm({ resumeText: profile.data.resumeText, targetRoles: profile.data.targetRoles.join(", "), targetLocations: profile.data.targetLocations.join(", "), salaryMin: profile.data.salary?.minMonthly.toString() ?? "", salaryMax: profile.data.salary?.maxMonthly.toString() ?? "", commute: profile.data.commuteToleranceMinutes?.toString() ?? "", highlights: profile.data.highlights.join("\n"), required: profile.data.constraints.filter((x) => x.level === "required").map((x) => x.text).join("\n"), preferred: profile.data.constraints.filter((x) => x.level === "preferred").map((x) => x.text).join("\n"), warnings: profile.data.redFlags.filter((x) => x.level === "warning").map((x) => x.text).join("\n"), blocking: profile.data.redFlags.filter((x) => x.level === "blocking").map((x) => x.text).join("\n"), weights: Object.fromEntries(DIMENSION_IDS.map((id) => [id, editableWeightLevel(profile.data!.weightInputs?.[id], profile.data!.weights[id]).toString()])) as Record<DimensionId, string> }); }, [profile.data]);
   const mutation = useMutation({ mutationFn: () => saveProfile({ resumeText: form.resumeText, targetRoles: splitLines(form.targetRoles), targetLocations: splitLines(form.targetLocations), salary: form.salaryMin && form.salaryMax ? { minMonthly: Number(form.salaryMin), maxMonthly: Number(form.salaryMax) } : null, commuteToleranceMinutes: form.commute ? Number(form.commute) : null, highlights: splitLines(form.highlights), constraints: [...splitLines(form.required).map((text) => ({ text, level: "required" })), ...splitLines(form.preferred).map((text) => ({ text, level: "preferred" }))], redFlags: [...splitLines(form.warnings).map((text) => ({ text, level: "warning" })), ...splitLines(form.blocking).map((text) => ({ text, level: "blocking" }))], weights: Object.fromEntries(DIMENSION_IDS.map((id) => [id, weightTiers[Number(form.weights[id]) - 1]])), expectedVersion: profile.data?.version ?? null }), onSuccess: (value) => queryClient.setQueryData(["profile"], value) });
   const update = (key: Exclude<keyof typeof form, "weights">, value: string) => setForm((current) => ({ ...current, [key]: value }));
-  return <main className="shell"><h1>我的简历与画像</h1><p className="subtitle">只维护一份当前简历；每次分析会冻结独立快照。</p>{profile.isError ? <ErrorNotice error={profile.error} /> : null}<form className="form" onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}><div className="form-field"><span className="field-label">当前简历</span><EditableResume key={`resume-${profile.data?.version ?? "new"}`} ariaLabel="当前简历" hintId="resume-hint" value={form.resumeText} onChange={(value) => update("resumeText", value)} defaultEditing={!profile.data} /><small className="field-hint" id="resume-hint">支持 Markdown；将用于岗位匹配分析，每次分析都会保存当时的独立快照。</small></div><EditablePreferences key={`prefs-${profile.data?.version ?? "new"}`} values={form} onChange={(patch) => setForm((current) => ({ ...current, ...patch }))} /><fieldset className="weight-editor"><legend>评测维度权重</legend><p className="field-hint">选择每个维度对你的重要程度；工作内容包含主导权和产品方向。系统评分时会自动换算为相对权重，无需关心数值或总和。</p><div className="weight-controls">{DIMENSION_IDS.map((id) => { const level = Number(form.weights[id]); const levelLabel = weightLevelLabels[level - 1]; return <label className="weight-control" key={id}><span className="weight-control-head"><span>{labels[id]}</span><strong>{levelLabel}</strong></span><input aria-label={`${labels[id]}重要程度`} aria-valuetext={levelLabel} type="range" min="1" max="3" step="1" value={level} onChange={(e) => setForm((current) => ({ ...current, weights: { ...current.weights, [id]: e.target.value } }))} /><span className="weight-scale" aria-hidden="true"><span>较低</span><span>一般</span><span>较高</span></span></label>; })}</div></fieldset>{mutation.error ? <ErrorNotice error={mutation.error} /> : null}<button disabled={mutation.isPending || !form.resumeText.trim() || !splitLines(form.targetRoles).length}>{mutation.isPending ? "保存中…" : "保存画像"}</button>{mutation.isSuccess ? <span role="status">已保存</span> : null}</form></main>;
+  return <main className="shell profile-shell"><header className="profile-page-intro"><p className="eyebrow">分析设置</p><h1>我的简历与画像</h1><p className="subtitle">维护你的经历与求职偏好，让每次岗位分析更贴近你的选择。</p></header><nav className="profile-section-nav" aria-label="页面分区"><a href="#profile-resume">当前简历</a><a href="#profile-preferences">求职偏好</a><a href="#profile-weights">评估重点</a></nav>{profile.isError ? <ErrorNotice error={profile.error} /> : null}<form className="form" onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}><section className="profile-section" id="profile-resume"><div className="profile-section-head"><div><h2>当前简历</h2><p>以这份经历作为岗位匹配的依据。</p></div>{profile.data ? <span className="profile-version">版本 {profile.data.resumeVersion}</span> : null}</div><EditableResume key={`resume-${profile.data?.version ?? "new"}`} ariaLabel="当前简历" hintId="resume-hint" value={form.resumeText} onChange={(value) => update("resumeText", value)} defaultEditing={!profile.data} /><small className="field-hint" id="resume-hint">支持 Markdown；将用于岗位匹配分析，每次分析都会保存当时的独立快照。</small></section><section className="profile-section" id="profile-preferences"><div className="profile-section-head"><div><h2>求职偏好</h2><p>定义你想要的机会，以及不愿妥协的底线。</p></div></div><EditablePreferences key={`prefs-${profile.data?.version ?? "new"}`} values={form} onChange={(patch) => setForm((current) => ({ ...current, ...patch }))} /></section><section className="profile-section" id="profile-weights"><div className="profile-section-head"><div><h2>评估重点</h2><p>选择对你更重要的维度，影响岗位分析的侧重。</p></div></div><fieldset className="weight-editor"><legend>评测维度权重</legend><p className="field-hint">选择每个维度对你的重要程度；工作内容包含主导权和产品方向。按你的实际偏好选择较低、一般或较高。</p><div className="weight-controls">{DIMENSION_IDS.map((id) => <fieldset className="weight-control" key={id} aria-label={`${labels[id]}重要程度`}><legend>{labels[id]}</legend><div className="weight-segments">{weightLevelLabels.map((label, index) => <label className="weight-option" key={label}><input type="radio" name={`weight-${id}`} value={index + 1} checked={Number(form.weights[id]) === index + 1} onChange={(event) => setForm((current) => ({ ...current, weights: { ...current.weights, [id]: event.target.value } }))} /><span>{label}</span></label>)}</div></fieldset>)}</div></fieldset></section>{mutation.error ? <ErrorNotice error={mutation.error} /> : null}<div className="profile-save-bar"><span>修改后保存，应用于后续岗位分析</span><div><button disabled={mutation.isPending || !form.resumeText.trim() || !splitLines(form.targetRoles).length}>{mutation.isPending ? "保存中…" : "保存画像"}</button>{mutation.isSuccess ? <span role="status">已保存</span> : null}</div></div></form></main>;
 }
 
 export function ImportPage() {
@@ -124,17 +136,29 @@ export function ImportPage() {
   const mutation = useMutation({ mutationFn: () => importJobTexts(items.map((text) => ({ text }))), onSuccess: (receipt) => setBatchId(receipt.resourceId) });
   const batch = useQuery({ queryKey: ["import-batch", batchId], queryFn: () => fetchImportBatch(batchId!), enabled: Boolean(batchId), refetchInterval: (query) => query.state.data?.items.every((item) => ["ready", "failed", "needs_input"].includes(item.status)) ? false : 600 });
   return <main className="shell analysis-shell">
-    <header className="page-intro"><p className="eyebrow">FIRST-PASS SCREENING</p><h1>判断这个岗位值不值得跟</h1><p className="subtitle">对照你的简历和求职底线，标出匹配点、风险和还看不清的地方，帮你决定要不要继续花时间。</p></header>
-    <section className={`profile-context ${profile.data ? "ready" : "missing"}`} aria-label="本次分析使用的简历">
-      <div><small>本次分析使用</small>{profile.isPending ? <strong>正在读取简历…</strong> : profile.data ? <><strong>{profile.data.targetRoles.join(" / ") || "当前简历"}</strong><span>简历版本 {profile.data.resumeVersion} · 分析时会保存独立快照</span></> : <><strong>还没有可用简历</strong><span>可以先粘贴 JD，识别完成后再补充简历。</span></>}</div>
-      <button type="button" className="secondary" onClick={() => setProfileOpen(true)}>{profile.data ? "预览与修改" : "录入简历"}</button>
-    </section>
+    <header className="page-intro home-intro"><p className="eyebrow">岗位匹配分析</p><h1>判断这个岗位值不值得跟</h1><p className="subtitle">粘贴岗位描述，对照你的简历，看清匹配点、风险与待核验信息。</p><ol className="home-flow" aria-label="分析流程"><li aria-current={!batch.data ? "step" : undefined}><span>1</span>粘贴 JD</li><li aria-current={batch.data ? "step" : undefined}><span>2</span>确认岗位</li><li><span>3</span>查看分析</li></ol></header>
     <section className="analysis-panel">
-      <div className="section-heading"><div><span className="step-label">第一步</span><h2>粘贴岗位描述</h2></div><span className="field-hint">支持同时处理 1–20 个 JD 文本</span></div>
-      <form className="form" onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }}>{items.map((text, index) => <label key={index}>JD {index + 1}<textarea aria-label={`JD ${index + 1}`} rows={items.length === 1 ? 10 : 7} placeholder="粘贴岗位职责、任职要求、薪资地点等完整正文…" value={text} onChange={(e) => setItems((current) => current.map((item, i) => i === index ? e.target.value : item))} required />{items.length > 1 ? <button type="button" className="text-button" onClick={() => setItems((current) => current.filter((_, i) => i !== index))}>移除此项</button> : null}</label>)}<div className="actions split-actions"><button type="button" className="secondary" disabled={items.length >= 20} onClick={() => setItems((current) => [...current, ""])}>+ 添加另一个 JD</button><button disabled={mutation.isPending}>{mutation.isPending ? "正在识别…" : `识别岗位（${items.length}）`}</button></div>{mutation.error ? <ErrorNotice error={mutation.error} /> : null}</form>
+      <div className="section-heading home-input-heading"><h2>粘贴岗位描述</h2><span className="field-hint">支持批量 · 最多 20 个岗位</span></div>
+      <form className="form" onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }}>{items.map((text, index) => <label className="jd-input" key={index}><span className="jd-input-label">JD {index + 1}</span><textarea aria-label={`JD ${index + 1}`} rows={items.length === 1 ? 10 : 7} placeholder="粘贴岗位职责、任职要求、薪资地点等完整正文…" value={text} onChange={(e) => setItems((current) => current.map((item, i) => i === index ? e.target.value : item))} required />{items.length > 1 ? <button type="button" className="text-button" onClick={() => setItems((current) => current.filter((_, i) => i !== index))}>移除此项</button> : null}</label>)}<section className={`profile-context ${profile.data ? "ready" : "missing"}`} aria-label="本次分析使用的简历">
+      <div><small>本次使用的简历</small>{profile.isPending ? <strong>正在读取简历…</strong> : profile.data ? <><strong>{profile.data.targetRoles.join(" / ") || "当前简历"}</strong><span>版本 {profile.data.resumeVersion} · 每次分析保留简历快照</span></> : <><strong>还没有可用简历</strong><span>可以先粘贴 JD，识别完成后再补充简历。</span></>}</div>
+      <button type="button" className="secondary" onClick={() => setProfileOpen(true)}>{profile.data ? "预览" : "录入简历"}</button>
+    </section><div className="actions split-actions"><button type="button" className="secondary" disabled={items.length >= 20} onClick={() => setItems((current) => [...current, ""])}>+ 添加另一个 JD</button><button className="analysis-submit" disabled={mutation.isPending}>{mutation.isPending ? "正在识别…" : `识别岗位（${items.length}）`}<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 10h12m-5-5 5 5-5 5" /></svg></button></div>{mutation.error ? <ErrorNotice error={mutation.error} /> : null}</form>
     </section>
     {batch.data ? <section className="result-section"><div className="section-heading"><div><span className="step-label">第二步</span><h2>确认岗位信息</h2></div></div>{batch.data.items.map((item) => <article className="card import-result" key={item.id}><div><strong>{importStatusLabel(item.status)}</strong><span>岗位 {item.opportunityId.slice(0, 8)}</span></div>{item.error ? <span>{item.error.message}</span> : null}{item.status === "failed" ? <button onClick={() => void retryImportItem(item.id).then(() => batch.refetch())}>重试</button> : null}{item.status === "needs_input" ? <p>该输入只有链接，请重新粘贴 JD 文本。</p> : null}{item.status === "ready" ? <Link className="primary-link" to="/opportunities/$opportunityId" params={{ opportunityId: item.opportunityId }}>确认信息并继续分析</Link> : null}</article>)}</section> : null}
-    <section className="recent-section"><div className="section-heading"><div><span className="step-label">最近</span><h2>分析记录</h2></div><Link to="/opportunities">查看全部</Link></div>{recent.data?.length ? <ul className="recent-list">{recent.data.slice(0, 3).map((item) => <li key={item.id}><Link className="recent-item" to="/opportunities/$opportunityId" params={{ opportunityId: item.id }}><strong>{item.title ?? "待补充岗位名称"}</strong><span>{item.company ?? "公司未知"} · {item.location ?? "地点未知"}</span></Link></li>)}</ul> : <p className="empty-copy">完成第一次岗位分析后，结果会出现在这里。</p>}</section>
+    <section className="recent-section" aria-labelledby="recent-heading">
+      <div className="section-heading">
+        <h2 id="recent-heading">最近分析记录</h2>
+        <Link className="recent-view-all" to="/opportunities">查看全部<ChevronIcon /></Link>
+      </div>
+      {recent.data?.length ? <ul className="recent-list">{recent.data.slice(0, 3).map((item) => <li key={item.id}>
+        <Link className="recent-item" to="/opportunities/$opportunityId" params={{ opportunityId: item.id }}>
+          <span className="recent-record-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8Z M14 3v5h5 M9 12h6 M9 16h4" /></svg></span>
+          <span className="recent-item-copy"><strong>{item.title ?? "待补充岗位名称"}</strong><span>{item.company ?? "公司未知"} · {item.location ?? "地点未知"}</span></span>
+          <time className="recent-item-time" dateTime={item.updatedAt} title={`更新于 ${new Date(item.updatedAt).toLocaleString("zh-CN")}`}>{new Date(item.updatedAt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}<span>{new Date(item.updatedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })}</span></time>
+          <span className="recent-item-arrow"><ChevronIcon /></span>
+        </Link>
+      </li>)}</ul> : <p className="empty-copy">完成第一次岗位分析后，结果会出现在这里。</p>}
+    </section>
     {profileOpen ? <ResumeDialog profile={profile.data ?? null} onClose={() => setProfileOpen(false)} /> : null}
   </main>;
 }
@@ -171,14 +195,15 @@ function ResumeDialog({ profile, onClose }: { profile: Profile | null; onClose()
 export function OpportunitiesPage() {
   const [filters, setFilters] = useState({ keyword: "", status: "", recommendation: "" }); const query = useQuery({ queryKey: ["opportunities", filters], queryFn: () => fetchOpportunities(filters) });
   return <main className="shell history-shell">
-    <header className="page-intro"><h1>历史岗位</h1><p className="subtitle">通过搜索和筛选回看历史数据，不使用看板。</p></header>
-    <div className="filters">
+    <header className="page-intro history-intro"><div><p className="eyebrow">机会回顾</p><h1>历史岗位</h1><p className="subtitle">回看分析结论，找到值得继续了解的机会。</p></div><Link className="primary-link" to="/">+ 分析新岗位</Link></header>
+    <div className="history-filter-panel"><div className="filters">
       <input aria-label="关键词" placeholder="岗位、公司或地点" value={filters.keyword} onChange={(e) => setFilters({ ...filters, keyword: e.target.value })} />
       <select aria-label="状态" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="">全部状态</option><option value="ready">已抽取</option><option value="confirmed">已确认</option><option value="failed">失败</option></select>
       <select aria-label="推荐" value={filters.recommendation} onChange={(e) => setFilters({ ...filters, recommendation: e.target.value })}><option value="">全部推荐</option>{(Object.keys(recommendationLabels) as Array<ScreeningReport["recommendation"]>).map((value) => <option key={value} value={value}>{recommendationLabels[value]}</option>)}</select>
     </div>
-    {query.isPending ? <p role="status">加载中…</p> : null}{query.error ? <ErrorNotice error={query.error} /> : null}{query.data?.length === 0 ? <p className="empty-copy">暂无匹配岗位。</p> : null}
-    {query.data?.length ? <div className="history-list">{query.data.map((item) => <Link className="history-item" key={item.id} to="/opportunities/$opportunityId" params={{ opportunityId: item.id }}><div><strong>{item.title ?? "待补充岗位名称"}</strong><span>{item.company ?? "公司未知"} · {item.location ?? "地点未知"}</span></div><small><strong>{item.recommendation ? recommendationLabels[item.recommendation] : "未分析"}</strong><span>{historyImportLabels[item.importStatus] ?? item.importStatus} · {historyDraftLabels[item.draftStatus] ?? item.draftStatus}</span></small></Link>)}</div> : null}
+    <div className="history-filter-summary"><span>{query.isPending ? "正在查找岗位…" : query.data ? `${query.data.length} 条记录` : "岗位记录"}</span>{Object.values(filters).some(Boolean) ? <button type="button" className="text-button" onClick={() => setFilters({ keyword: "", status: "", recommendation: "" })}>清除筛选</button> : <span>点击记录查看详情</span>}</div></div>
+    {query.isPending ? <p role="status">加载中…</p> : null}{query.error ? <ErrorNotice error={query.error} /> : null}{query.data?.length === 0 ? <div className="history-empty"><p className="empty-copy">暂无匹配岗位。</p><small>试试调整筛选条件，或添加一个新岗位。</small></div> : null}
+    {query.data?.length ? <div className="history-list">{query.data.map((item) => <Link className="history-item" key={item.id} to="/opportunities/$opportunityId" params={{ opportunityId: item.id }}><div><strong>{item.title ?? "待补充岗位名称"}</strong><span>{item.company ?? "公司未知"} · {item.location ?? "地点未知"}</span></div><small className="history-result"><strong className={`history-recommendation ${item.recommendation ?? "unanalyzed"}`}>{item.recommendation ? recommendationLabels[item.recommendation] : "未分析"}</strong><span>{historyImportLabels[item.importStatus] ?? item.importStatus} · {historyDraftLabels[item.draftStatus] ?? item.draftStatus}</span></small><time className="history-time" dateTime={item.updatedAt} title={`更新于 ${new Date(item.updatedAt).toLocaleString("zh-CN")}`}>{new Date(item.updatedAt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}<span>{new Date(item.updatedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })}</span></time><i className="report-chevron" aria-hidden="true"><ChevronIcon /></i></Link>)}</div> : null}
   </main>;
 }
 
@@ -212,8 +237,22 @@ function EditableDraft({ values, onChange, defaultEditing, onComplete, pending, 
     onChange: (event: { target: { value: string } }) => onChange({ [field.key]: event.target.value }),
     onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Escape") { event.preventDefault(); cancelEditing(); } },
   });
-  if (editing) return <div className="editable-field editing draft-editor"><div className="inline-edit-actions draft-edit-actions"><button type="button" className="text-button" disabled={pending} onClick={cancelEditing}>取消</button><button type="button" className="compact-button" disabled={pending} onClick={() => void completeEditing()}>{pending ? "保存中…" : "保存"}</button></div><div className="grid">{draftFields.map((field) => <label key={field.key}>{field.label}<textarea rows={field.multiline ? 5 : 2} {...bindField(field)} /></label>)}</div></div>;
-  return <div className="editable-preview preferences-preview"><button type="button" className="edit-affordance" aria-label="编辑岗位草稿" onClick={beginEditing}><PencilIcon /><span>编辑</span></button><div className="grid">{draftFields.map((field) => { const empty = !values[field.key].trim(); const text = empty ? "-" : values[field.key]; return <div className="form-field" key={field.key}><span className="field-label">{field.label}</span><span className={`${empty ? "preview-value empty" : "preview-value"}${field.multiline ? " multiline" : ""}`} title={!empty && !field.multiline ? text : undefined}>{text}</span></div>; })}</div></div>;
+  const groups = [
+    { title: "基本信息", fields: draftFields.slice(0, 3), className: "draft-basic-grid" },
+    { title: "薪资待遇", fields: draftFields.slice(3, 6), className: "draft-salary-grid" },
+    { title: "岗位内容", fields: draftFields.slice(6), className: "draft-content-grid" },
+  ];
+  return <div className={editing ? "editable-field editing draft-editor" : "draft-preview"}>
+    <div className="draft-toolbar"><span>{editing ? "核对并完善岗位信息" : "岗位信息"}</span>{editing ? <div className="inline-edit-actions"><button type="button" className="compact-button draft-cancel-button" disabled={pending} onClick={cancelEditing}>取消</button><button type="button" className="compact-button" disabled={pending} onClick={() => void completeEditing()}>{pending ? "保存中…" : "保存"}</button></div> : <button type="button" className="draft-edit-button" aria-label="编辑岗位草稿" onClick={beginEditing}><PencilIcon /><span>编辑</span></button>}</div>
+    {groups.map((group) => <section className="draft-group" key={group.title} aria-label={group.title}>
+      <div className={group.className}>{group.fields.map((field) => {
+        const empty = !values[field.key].trim();
+        const text = empty ? "-" : values[field.key];
+        const unit = numericDraftKeys.includes(field.key) ? field.key === "payMonths" ? "个月 / 年" : "元 / 月" : null;
+        return editing ? <label className="form-field" key={field.key}><span className="field-label">{field.label}{unit ? <small>（{unit}）</small> : null}</span><textarea rows={field.multiline ? 5 : 1} {...bindField(field)} /></label> : <div className="form-field" key={field.key}><span className="field-label">{field.label}</span><div className="draft-value"><span className={`${empty ? "preview-value empty" : "preview-value"}${field.multiline ? " multiline" : ""}`} title={!empty && !field.multiline ? text : undefined}>{text}</span>{unit && !empty ? <small>{unit}</small> : null}</div></div>;
+      })}</div>
+    </section>)}
+  </div>;
 }
 
 export function OpportunityPage() {
@@ -239,11 +278,11 @@ export function OpportunityPage() {
   } }); const start = useMutation({ mutationFn: () => startScreening(opportunityId), onSuccess: (receipt) => { setRunId(receipt.resourceId); void client.invalidateQueries({ queryKey: ["opportunity", opportunityId] }); } });
   useRunUpdates(runId, opportunityId);
   if (detail.isPending) return <main className="shell"><p role="status">加载中…</p></main>; if (detail.error || !detail.data) return <main className="shell"><ErrorNotice error={detail.error ?? new Error("岗位不存在")} /></main>;
-  const data = detail.data; const selectedRun = data.runs.find((run) => run.id === runId) ?? data.runs[0];
+  const data = detail.data; const selectedRun = data.runs.find((run) => run.id === runId) ?? data.runs.find(run => run.kind !== "deep_research");
   const activeRun = selectedRun?.successorRunId ? data.runs.find((run) => run.id === selectedRun.successorRunId) ?? selectedRun : selectedRun;
   const draftKey = opportunityId;
   const reportNotes = [...new Set(data.reports.flatMap((report) => report.assumptions))];
-  return <main className="shell"><h1>{data.title ?? "岗位详情"}</h1><p className="subtitle">{data.company ?? "公司未知"} · {data.location ?? "地点未知"}</p><section className="draft-section"><h2>岗位草稿</h2><p>状态：{data.draft.status} · 版本 {data.draft.version}</p>{hydratedFor === draftKey ? <EditableDraft key={draftKey} values={edits} onChange={(patch) => setEdits((current) => ({ ...current, ...patch }))} defaultEditing={data.draft.status !== "confirmed"} onComplete={() => save.mutateAsync()} pending={save.isPending} onEditingChange={setDraftEditing} /> : null}{data.draft.assumptions.map((item) => <p className="notice" key={item}>{item}</p>)}{data.draft.conflicts.map((item) => <p className="notice error" key={item.id}>字段 {item.field} 存在冲突：保留了用户值</p>)}{save.error ? <ErrorNotice error={save.error} /> : null}</section><section><h2>匹配初筛</h2><button onClick={() => start.mutate()} disabled={draftEditing || save.isPending || data.draft.status !== "confirmed" || start.isPending}>开始初筛</button>{data.draft.status !== "confirmed" ? <p>确认草稿后才能开始。</p> : null}{activeRun ? <RunControls key={activeRun.id} run={activeRun} onChanged={(nextRunId) => { if (nextRunId) setRunId(nextRunId); void detail.refetch(); }} /> : null}</section><section><h2>分析报告</h2>{reportNotes.length ? <div className="report-notes"><h3>补充说明</h3><blockquote>{reportNotes.map((item) => <p key={item}>{item}</p>)}</blockquote></div> : null}{data.reports.length === 0 ? <p>暂无报告。</p> : data.reports.map((report) => <ReportCard report={report} key={report.id} />)}</section></main>;
+  return <main className="shell"><h1>{data.title ?? "岗位详情"}</h1><p className="subtitle">{data.company ?? "公司未知"} · {data.location ?? "地点未知"}</p><section className="draft-section"><div className="draft-section-heading"><h2>岗位草稿</h2><div><span className={`draft-status ${data.draft.status}`}>{data.draft.status === "confirmed" ? "已确认" : "待确认"}</span><span className="draft-version">版本 {data.draft.version}</span></div></div>{hydratedFor === draftKey ? <EditableDraft key={draftKey} values={edits} onChange={(patch) => setEdits((current) => ({ ...current, ...patch }))} defaultEditing={data.draft.status !== "confirmed"} onComplete={() => save.mutateAsync()} pending={save.isPending} onEditingChange={setDraftEditing} /> : null}{data.draft.assumptions.map((item) => <p className="notice" key={item}>{item}</p>)}{data.draft.conflicts.map((item) => <p className="notice error" key={item.id}>字段 {item.field} 存在冲突：保留了用户值</p>)}{save.error ? <ErrorNotice error={save.error} /> : null}</section><section className="screening-section"><div className="screening-heading"><h2>匹配初筛</h2><button className={activeRun?.status === "completed" ? "secondary" : undefined} onClick={() => start.mutate()} disabled={draftEditing || save.isPending || data.draft.status !== "confirmed" || start.isPending}>{start.isPending ? "正在启动…" : activeRun?.status === "completed" ? "重新分析" : "开始初筛"}</button></div>{start.error ? <ErrorNotice error={start.error} /> : null}{data.draft.status !== "confirmed" ? <p>确认草稿后才能开始。</p> : null}{activeRun ? <RunControls key={activeRun.id} run={activeRun} onChanged={(nextRunId) => { if (nextRunId) setRunId(nextRunId); void detail.refetch(); }} /> : null}</section><DeepResearchPanel opportunityId={opportunityId} runs={data.runs} canStart={!draftEditing && data.reports.some(report => report.id === data.currentReportId && report.effective && !["stale", "invalidated"].includes(report.status))} /><section><h2>分析报告</h2>{reportNotes.length ? <div className="report-notes"><h3>补充说明</h3><blockquote>{reportNotes.map((item) => <p key={item}>{item}</p>)}</blockquote></div> : null}{data.reports.length === 0 ? <p>暂无报告。</p> : data.reports.map((report) => <ReportCard report={report} key={report.id} />)}</section></main>;
 }
 
 function useRunUpdates(runId: string | null, opportunityId: string) { const client = useQueryClient(); useEffect(() => { if (!runId) return; const events = new RunEventClient(runId); events.connect(() => { void client.invalidateQueries({ queryKey: ["run", runId] }); void client.invalidateQueries({ queryKey: ["opportunity", opportunityId] }); }, () => undefined); return () => events.disconnect(); }, [client, opportunityId, runId]); }
@@ -261,6 +300,19 @@ export function RunControls({ run, onChanged }: { run: Awaited<ReturnType<typeof
   const title = completed ? "匹配分析已完成" : current.status === "failed" ? `分析在「${activeStage.label}」阶段失败` : current.status === "cancelled" ? "匹配分析已取消" : current.status === "queued" && !current.currentStage ? "正在准备匹配分析" : activeStage.title;
   const description = completed ? "分析报告已经生成，可以在下方查看完整结果。" : current.status === "failed" ? "你可以创建一个新分析，并保留本次失败记录。" : current.status === "cancelled" ? "本次分析没有生成报告，可以重新开始。" : current.status === "queued" && !current.currentStage ? "任务已经进入队列，即将开始检查岗位条件。" : activeStage.description;
   const modelLabel = current.modelConfig?.provider === "deepseek" ? `DeepSeek · ${current.modelConfig.model}` : "本地演示模型";
+
+  if (completed) return <div className="run-completion" aria-live="polite">
+    <div className="run-completion-summary">
+      <span className="run-completion-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 12 4 4 8-8" /></svg></span>
+      <div><h3>{title}</h3><p>报告已生成，可在下方查看匹配结论与分析依据。</p></div>
+      <span className="run-completion-badge">已完成</span>
+    </div>
+    <details className="run-completion-details">
+      <summary><span>分析过程</span><span className="run-completion-detail-hint">5 项检查已完成<ChevronIcon /></span></summary>
+      <ol className="run-completion-stages" aria-label="初筛阶段">{screeningStages.map((stage) => <li key={stage.id}><span aria-hidden="true">✓</span>{stage.label}</li>)}</ol>
+      <div className="run-progress-meta"><span>模型：{modelLabel}</span><span>分析编号：{current.id.slice(0, 8)}</span></div>
+    </details>
+  </div>;
 
   return <div className={`card run-progress-card ${current.status}`} aria-live="polite">
     <div className="run-progress-head">
@@ -286,5 +338,39 @@ export function RunControls({ run, onChanged }: { run: Awaited<ReturnType<typeof
     {current.status === "failed" ? <div className="run-actions"><button disabled={retry.isPending} onClick={() => retry.mutate()}>重新分析</button></div> : null}
   </div>;
 }
-export function ReportCard({ report }: { report: ScreeningReport }) { return <details className={`report ${report.status}`}><summary className="report-head"><h3>{recommendationLabels[report.recommendation]}</h3><span>{reportStatusLabels[report.status]} · {confidenceLabels[report.confidence]} · {report.modelLabel}</span><i className="report-chevron" aria-hidden="true"><ChevronIcon /></i></summary>{report.matches.length ? <section><h4>匹配点</h4><ul>{report.matches.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}{report.risks.length ? <section><h4>总体风险</h4><ul>{report.risks.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}<div className="dimensions">{DIMENSION_IDS.map((id) => { const item = report.dimensions[id]; return <section className="dimension" key={id}><strong>{labels[id]}</strong><span>{verdictLabels[item.verdict]} / {confidenceLabels[item.confidence]}</span>{item.risks.map((risk) => <small key={risk}>风险：{risk}</small>)}{item.unknowns.map((unknown) => <small key={unknown}>待核验：{unknown}</small>)}{item.claimIds.length ? <small>证据：{item.claimIds.join(", ")}</small> : null}</section>; })}</div>{report.rules.length ? <p>规则命中：{report.rules.join("；")}</p> : null}{report.claims.length ? <details className="claims"><summary>证据</summary>{report.claims.map((claim) => <article className="dimension" key={claim.id}><strong>{claim.statement}</strong><small>{claimStatusLabels[claim.status]} · {confidenceLabels[claim.confidence]}</small><small>简历证据：{claim.resumeEvidence}</small><small>JD 证据：{claim.jobEvidence}</small></article>)}</details> : null}</details>; }
+function ReportEvidence({ claims }: { claims: ScreeningReport["claims"] }) {
+  return <>{claims.map((claim) => <article className="report-evidence" key={claim.id}>
+    <strong>{claim.statement}</strong><small>{claimStatusLabels[claim.status]} · 置信度{confidenceLabels[claim.confidence]}</small>
+    <p>简历证据：{claim.resumeEvidence}</p><p>JD 证据：{claim.jobEvidence}</p>
+  </article>)}</>;
+}
+
+export function ReportCard({ report }: { report: ScreeningReport }) {
+  const linkedIds = new Set(DIMENSION_IDS.flatMap((id) => report.dimensions[id].claimIds));
+  const otherClaims = report.claims.filter((claim) => !linkedIds.has(claim.id));
+  return <details className={`report ${report.status}`}>
+    <summary className="report-head">
+      <div className="report-heading-copy"><h3 className={`recommendation ${report.recommendation}`}>{recommendationLabels[report.recommendation]}</h3><span className="report-summary-meta">{reportStatusLabels[report.status]} · 置信度{confidenceLabels[report.confidence]} · {report.modelLabel}</span></div>
+      <i className="report-chevron" aria-hidden="true"><ChevronIcon /></i>
+    </summary>
+    <div className="report-body">
+      {report.matches.length ? <section className="report-findings"><h4>匹配点 <span>{report.matches.length}</span></h4><ul>{report.matches.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
+      {report.risks.length ? <section className="report-findings report-risks"><h4>总体风险 <span>{report.risks.length}</span></h4><ul>{report.risks.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
+      <section className="report-dimensions"><h4>维度评估</h4><div className="dimensions">{DIMENSION_IDS.map((id) => {
+        const item = report.dimensions[id];
+        const claims = report.claims.filter((claim) => item.claimIds.includes(claim.id));
+        const missingCount = item.claimIds.filter((claimId) => !report.claims.some((claim) => claim.id === claimId)).length;
+        return <section className="dimension" key={id}>
+          <div className="dimension-heading"><strong>{labels[id]}</strong><span className={`verdict ${item.verdict}`}>{verdictLabels[item.verdict]}</span></div>
+          <small className="dimension-confidence">置信度{confidenceLabels[item.confidence]}</small>
+          {item.risks.map((risk) => <p className="dimension-risk" key={risk}>风险：{risk}</p>)}
+          {item.unknowns.map((unknown) => <p className="dimension-unknown" key={unknown}>待核验：{unknown}</p>)}
+          {item.claimIds.length ? <details className="claims"><summary>查看依据 · {item.claimIds.length} 条</summary><ReportEvidence claims={claims} />{missingCount ? <p className="field-hint">{missingCount} 条证据内容暂不可用</p> : null}</details> : null}
+        </section>;
+      })}</div></section>
+      {report.rules.length ? <div className="report-rules"><h4>规则命中</h4><ul>{report.rules.map((rule) => <li key={rule}>{rule}</li>)}</ul></div> : null}
+      {otherClaims.length ? <details className="claims report-other-evidence"><summary>其他证据 · {otherClaims.length} 条</summary><ReportEvidence claims={otherClaims} /></details> : null}
+    </div>
+  </details>;
+}
 function ErrorNotice({ error }: { error: unknown }) { return <div className="notice error" role="alert">{error instanceof ApiError ? `${error.code}：${error.message}` : error instanceof Error ? error.message : "操作失败"}</div>; }

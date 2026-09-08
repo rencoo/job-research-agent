@@ -140,7 +140,7 @@ export class JobRepository {
     return row ? mapJob(row) : null;
   }
 
-  claimNext(owner: string, now: Date, leaseMs: number): PersistedJob | null {
+  claimNext(owner: string, now: Date, leaseMs: number, types?: readonly string[]): PersistedJob | null {
     return this.immediateTransaction(() => {
       const row = this.sqlite
         .prepare(`
@@ -149,10 +149,11 @@ export class JobRepository {
             AND cancel_requested = 0
             AND attempts < max_attempts
             AND available_at <= ?
+            ${types?.length ? `AND type IN (${types.map(() => '?').join(',')})` : ''}
           ORDER BY available_at, created_at
           LIMIT 1
         `)
-        .get(now.getTime()) as JobRow | undefined;
+        .get(now.getTime(), ...(types ?? [])) as JobRow | undefined;
       if (!row) return null;
 
       const attempt = row.attempts + 1;

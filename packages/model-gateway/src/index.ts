@@ -29,15 +29,45 @@ export interface ModelGateway {
   generateStructured<T>(request: ModelRequest<T>): Promise<T>;
 }
 
+export interface ModelValidationDetails {
+  task: string;
+  schemaName: string;
+  issues: Array<{ path: Array<string | number>; code: string; expected?: string }>;
+}
+
 export class ModelGatewayError extends Error {
   constructor(
     readonly code: string,
     message: string,
     readonly retryable: boolean,
+    readonly httpStatus?: number,
+    readonly validation?: ModelValidationDetails,
   ) {
     super(message);
     this.name = "ModelGatewayError";
   }
+}
+
+function validationDetails(error: unknown, request: ModelRequest<unknown>): ModelValidationDetails {
+  const fields = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    const object = value as Record<string, unknown>;
+    if (object.properties && typeof object.properties === "object") Object.keys(object.properties).forEach(key => fields.add(key));
+    Object.values(object).forEach(visit);
+  };
+  visit(request.schema);
+  const codes = new Set(["invalid_type", "invalid_value", "invalid_format", "too_small", "too_big", "invalid_union", "unrecognized_keys", "custom", "not_multiple_of", "invalid_key", "invalid_element"]);
+  const types = new Set(["string", "number", "integer", "boolean", "array", "object", "null", "undefined"]);
+  const raw = error && typeof error === "object" && "issues" in error && Array.isArray(error.issues) ? error.issues : [];
+  return { task: request.task, schemaName: request.schemaName, issues: raw.slice(0, 20).map(issue => {
+    const item = issue && typeof issue === "object" ? issue as Record<string, unknown> : {};
+    return {
+      path: Array.isArray(item.path) ? item.path.slice(0, 20).map(part => typeof part === "number" && Number.isSafeInteger(part) ? part : typeof part === "string" && fields.has(part) ? part : "[redacted]") : [],
+      code: typeof item.code === "string" && codes.has(item.code) ? item.code : "validation_failed",
+      ...(typeof item.expected === "string" && types.has(item.expected) ? { expected: item.expected } : {}),
+    };
+  }) };
 }
 
 function abortError(): DOMException {
@@ -115,6 +145,16 @@ const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEEPSEEK_TIMEOUT_MS = 180_000;
 const DEEPSEEK_STRUCTURED_REASONING = { effort: "none" } as const;
 
+function deepSeekSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  // DeepSeek rejects format=uri (HTTP 400). The original validator still checks URLs.
+  const adapt = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(adapt);
+    if (value === null || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value).filter(([key, item]) => !(key === "format" && item === "uri")).map(([key, item]) => [key, adapt(item)]));
+  };
+  return adapt(schema) as Record<string, unknown>;
+}
+
 export class DeepSeekModel implements ModelGateway {
   readonly descriptor: ModelDescriptor;
   private readonly client: ResponsesClient;
@@ -146,7 +186,7 @@ export class DeepSeekModel implements ModelGateway {
           format: {
             type: "json_schema",
             name: request.schemaName,
-            schema: request.schema,
+            schema: deepSeekSchema(request.schema),
             strict: true,
           },
         },
@@ -166,8 +206,8 @@ export class DeepSeekModel implements ModelGateway {
     }
     try {
       return request.validate(parsed);
-    } catch {
-      throw new ModelGatewayError("deepseek_schema_invalid", "DeepSeek 返回结果不符合结构约束", false);
+    } catch (error) {
+      throw new ModelGatewayError("deepseek_schema_invalid", "DeepSeek 返回结果不符合结构约束", false, undefined, validationDetails(error, request));
     }
   }
 }
@@ -178,6 +218,12 @@ function mapDeepSeekError(error: unknown): ModelGatewayError {
     : typeof error === "object" && error !== null && "status" in error && typeof error.status === "number"
       ? error.status
       : undefined;
+  if (status === 400 || status === 422) {
+    return new ModelGatewayError("deepseek_request_invalid", "DeepSeek 拒绝请求参数或输出结构", false, status);
+  }
+  if (status === 404) {
+    return new ModelGatewayError("deepseek_not_found", "DeepSeek 模型或接口不存在", false, status);
+  }
   const retryable = status === 408 || status === 429 || (status !== undefined && status >= 500)
     || error instanceof APIConnectionTimeoutError
     || error instanceof APIConnectionError;
@@ -189,7 +235,7 @@ function mapDeepSeekError(error: unknown): ModelGatewayError {
     return new ModelGatewayError("deepseek_timeout", "DeepSeek 请求超时", true);
   }
   if (retryable) return new ModelGatewayError("deepseek_unavailable", "DeepSeek 服务暂时不可用", true);
-  return new ModelGatewayError("deepseek_request_failed", "DeepSeek 请求失败", false);
+  return new ModelGatewayError("deepseek_request_failed", "DeepSeek 请求失败", false, status);
 }
 
 export class ModelGatewayResolver {

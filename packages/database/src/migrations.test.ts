@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, copyFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDatabase } from "./connection";
 import { applyMigrations } from "./migrations";
@@ -23,6 +23,7 @@ describe("database migrations", () => {
         "0001_initial.sql",
         "0002_text_screening.sql",
         "0003_model_provenance.sql",
+        "0004_deep_research.sql",
       ]);
       expect(applyMigrations(connection.sqlite)).toEqual([]);
       const tables = connection.sqlite
@@ -55,4 +56,17 @@ describe("database migrations", () => {
       connection.close();
     }
   });
+});
+
+it("backs up an existing database before adding migrations", () => {
+  const directory = mkdtempSync(join(tmpdir(), "research-migration-backup-")); directories.push(directory);
+  const legacy = join(directory, "legacy"); mkdirSync(legacy);
+  copyFileSync(resolve(import.meta.dirname, "../migrations/0001_initial.sql"), join(legacy, "0001_initial.sql"));
+  const connection = openDatabase({ dataDirectory: directory });
+  try {
+    applyMigrations(connection.sqlite, legacy); applyMigrations(connection.sqlite);
+    const backups = readdirSync(join(directory, "backups")); expect(backups).toHaveLength(1);
+    const backup = openDatabase({ dataDirectory: join(directory, "backups"), filename: backups[0]! });
+    try { expect(backup.sqlite.prepare("SELECT version FROM schema_migrations").all()).toEqual([{ version: "0001_initial.sql" }]); } finally { backup.close(); }
+  } finally { connection.close(); }
 });

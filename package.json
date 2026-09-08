@@ -11,7 +11,8 @@
     "typecheck": "pnpm -r exec tsc --noEmit",
     "db:migrate": "pnpm --filter @job-research/database db:migrate",
     "spec:doctor": "openspec doctor",
-    "spec:validate": "openspec validate --all --strict"
+    "spec:validate": "openspec validate --all --strict",
+    "test:research-live": "pnpm --filter @job-research/server test:research-live"
   },
   "devDependencies": {
     "@fission-ai/openspec": "^1.12.0",

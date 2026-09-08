@@ -157,6 +157,7 @@ export class BusinessRepository {
   createRun(run: ResearchRun, snapshotIds: { profile: string; job: string }): void {
     this.sqlite.prepare(`INSERT INTO research_runs(id,opportunity_id,job_id,profile_snapshot_id,job_snapshot_id,status,current_stage,parent_run_id,successor_run_id,report_id,model_config_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(run.id, run.opportunityId, run.jobId, snapshotIds.profile, snapshotIds.job, run.status, run.currentStage, run.parentRunId, run.successorRunId, run.reportId, run.modelConfig ? encode(run.modelConfig) : null, Date.parse(run.createdAt), Date.parse(run.updatedAt));
+    this.sqlite.prepare("UPDATE research_runs SET kind=? WHERE id=?").run(run.kind ?? "screening", run.id);
     this.appendRunEvent(run.id, "status_changed", { status: run.status }, new Date(run.createdAt));
   }
 
@@ -282,7 +283,7 @@ export function emptyDraftFields() {
 function mapRun(row: Record<string, unknown>): ResearchRun {
   return ResearchRunSchema.parse({
     id: row.id, opportunityId: row.opportunity_id, jobId: row.job_id, status: row.status,
-    currentStage: row.current_stage, parentRunId: row.parent_run_id,
+    kind: row.kind ?? "screening", currentStage: row.current_stage, parentRunId: row.parent_run_id,
     successorRunId: row.successor_run_id, reportId: row.report_id,
     modelConfig: row.model_config_json == null ? LOCAL_MODEL_CONFIG : parse(String(row.model_config_json)),
     createdAt: iso(Number(row.created_at)), updatedAt: iso(Number(row.updated_at)),

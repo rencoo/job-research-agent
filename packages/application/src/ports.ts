@@ -35,3 +35,11 @@ export interface JobCommand { id: string; type: string; payload: unknown; maxAtt
 export interface BusinessUnitOfWork {
   transaction<T>(operation: () => T): T;
 }
+
+/** Complete company/position research commands; transport adapters do not orchestrate stages. */
+export interface DeepResearchCommands {
+  start(opportunityId: string, idempotencyKey: string, input?: unknown): Promise<UseCaseResult<CommandReceipt>>;
+  respond(runId: string, input: unknown): Promise<UseCaseResult<ResearchRun>>;
+  cancel(runId: string): Promise<UseCaseResult<ResearchRun>>;
+  retry(runId: string): Promise<UseCaseResult<CommandReceipt>>;
+}

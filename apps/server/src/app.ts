@@ -1,3 +1,5 @@
+import type { DeepResearchApplication } from "./deep-research";
+import { registerResearchRoutes } from "./research-routes";
 import Fastify, { type FastifyInstance } from "fastify";
 import {
   CancelJobResponseSchema,
@@ -14,6 +16,7 @@ import type { IngestionApplication, OpportunityApplication, ProfileApplication, 
 
 export interface ServerDependencies {
   repository: JobRepository;
+  deepResearch?: DeepResearchApplication;
   databaseHealth?: () => boolean;
   workerHealth?: () => boolean;
   ssePollMs?: number;
@@ -176,8 +179,9 @@ export function buildServer(dependencies: ServerDependencies): FastifyInstance {
     return reply;
   });
 
-  if (dependencies.business) registerBusinessRoutes(app, dependencies.business, pollMs, heartbeatMs);
+  if (dependencies.business) registerBusinessRoutes(app, dependencies.business, pollMs, heartbeatMs, dependencies.deepResearch);
 
+  if (dependencies.deepResearch) registerResearchRoutes(app, dependencies.deepResearch);
   return app;
 }
 
@@ -191,6 +195,7 @@ function registerBusinessRoutes(
   business: NonNullable<ServerDependencies["business"]>,
   pollMs: number,
   heartbeatMs: number,
+  deepResearch?: DeepResearchApplication,
 ) {
   app.get("/api/profile", async (_request, reply) => sendResult(reply, await business.profile.getCurrent()));
   app.put("/api/profile", async (request, reply) => sendResult(reply, await business.profile.save(request.body)));
@@ -203,8 +208,8 @@ function registerBusinessRoutes(
   app.post<{ Params: { opportunityId: string } }>("/api/opportunities/:opportunityId/draft/confirm", async (request, reply) => sendResult(reply, await business.opportunities.confirmDraft(request.params.opportunityId, request.body)));
   app.post<{ Params: { opportunityId: string } }>("/api/opportunities/:opportunityId/screening-runs", async (request, reply) => sendResult(reply, await business.research.startScreening(request.params.opportunityId, String(request.headers["idempotency-key"] ?? ""))));
   app.get<{ Params: { runId: string } }>("/api/runs/:runId", async (request, reply) => sendResult(reply, await business.research.getRun(request.params.runId)));
-  app.post<{ Params: { runId: string } }>("/api/runs/:runId/cancel", async (request, reply) => sendResult(reply, await business.research.cancel(request.params.runId)));
-  app.post<{ Params: { runId: string } }>("/api/runs/:runId/retry", async (request, reply) => sendResult(reply, await business.research.retryFailed(request.params.runId)));
+  app.post<{ Params: { runId: string } }>("/api/runs/:runId/cancel", async (request, reply) => sendResult(reply, await (business.repository.getRun(request.params.runId)?.kind === "deep_research" && deepResearch ? deepResearch.cancel(request.params.runId) : business.research.cancel(request.params.runId))));
+  app.post<{ Params: { runId: string } }>("/api/runs/:runId/retry", async (request, reply) => sendResult(reply, await (business.repository.getRun(request.params.runId)?.kind === "deep_research" && deepResearch ? deepResearch.retry(request.params.runId) : business.research.retryFailed(request.params.runId))));
 
   app.get<{ Params: { runId: string }; Querystring: { after?: string } }>("/api/runs/:runId/events", async (request, reply) => {
     const run = business.repository.getRun(request.params.runId);

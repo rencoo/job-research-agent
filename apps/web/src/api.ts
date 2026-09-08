@@ -117,3 +117,5 @@ export class RunEventClient {
   }
   disconnect() { this.source?.close(); this.source = null; }
 }
+
+export { fetchDeepResearch, startDeepResearch, respondToCompany, fetchSourceDocument } from "./research-api";

@@ -48,6 +48,7 @@ export interface WorkerOptions {
   leaseMs?: number;
   pollIntervalMs?: number;
   retryBaseDelayMs?: number;
+  jobTypes?: readonly string[];
 }
 
 const systemClock: Clock = { now: () => new Date() };
@@ -82,6 +83,7 @@ export class LocalJobWorker {
   private readonly leaseMs: number;
   private readonly pollIntervalMs: number;
   private readonly retryBaseDelayMs: number;
+  private readonly jobTypes: readonly string[] | undefined;
   private accepting = false;
   private loopPromise: Promise<void> | null = null;
   private activePromise: Promise<boolean> | null = null;
@@ -89,6 +91,7 @@ export class LocalJobWorker {
 
   constructor(options: WorkerOptions) {
     this.repository = options.repository;
+    this.jobTypes = options.jobTypes;
     this.registry = options.registry;
     this.clock = options.clock ?? systemClock;
     this.workerId = options.workerId ?? crypto.randomUUID();
@@ -110,6 +113,7 @@ export class LocalJobWorker {
       this.workerId,
       this.clock.now(),
       this.leaseMs,
+      this.jobTypes,
     );
     if (!job) return false;
 

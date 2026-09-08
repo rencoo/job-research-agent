@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DIMENSION_IDS, type ScreeningReport } from "@job-research/contracts";
 import { App, router } from "./App";
@@ -15,7 +15,7 @@ const detail = { id: "o1", title: "AI Engineer", company: "Demo", location: "上
 
 function renderApp() {
   const fetcher = globalThis.fetch;
-  vi.stubGlobal("fetch", (input: string | URL | Request, options?: RequestInit) => String(input) === "/api/health" ? json({ status: "healthy", components: { api: { status: "healthy" }, database: { status: "healthy" }, worker: { status: "healthy" } } }) : fetcher(input, options));
+  vi.stubGlobal("fetch", (input: string | URL | Request, options?: RequestInit) => String(input).endsWith("/deep-research") ? json({ states: [], reports: [], currentReportId: null }) : String(input) === "/api/health" ? json({ status: "healthy", components: { api: { status: "healthy" }, database: { status: "healthy" }, worker: { status: "healthy" } } }) : fetcher(input, options));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
 }
@@ -42,14 +42,14 @@ describe("business pages", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存并用于分析" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(screen.getByLabelText("JD 1")).toHaveValue("JD remains here");
-    expect(screen.getByRole("button", { name: "预览与修改" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "预览" })).toBeInTheDocument();
   });
 
   it("previews an existing resume as Markdown and edits preview fields on demand", async () => {
     const markdownProfile = { ...profile, resumeText: "# TypeScript 工程师\n\n- Agent Runtime", targetRoles: ["AI Engineer", "Agent Engineer"] };
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => String(input) === "/api/profile" ? json(markdownProfile) : String(input).startsWith("/api/opportunities") ? json([]) : json({})));
     renderApp();
-    fireEvent.click(await screen.findByRole("button", { name: "预览与修改" }));
+    fireEvent.click(await screen.findByRole("button", { name: "预览" }));
     expect(screen.getByRole("heading", { name: "TypeScript 工程师" })).toBeInTheDocument();
     expect(screen.getByText("Agent Runtime")).toBeInTheDocument();
     expect(screen.getByText("AI Engineer")).toBeInTheDocument();
@@ -73,11 +73,13 @@ describe("business pages", () => {
     expect(screen.getByLabelText("目标岗位")).toHaveAttribute("placeholder", "例如：AI 应用工程师, AI Product Engineer");
     expect(screen.getByText("支持 Markdown；将用于岗位匹配分析，每次分析都会保存当时的独立快照。")).toBeInTheDocument();
     expect(screen.queryByText("100%")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("靠谱的公司和人重要程度"), { target: { value: "3" } });
-    expect(screen.getByLabelText("靠谱的公司和人重要程度")).toHaveAttribute("aria-valuetext", "较高");
+    const importance = screen.getByRole("group", { name: "靠谱的公司和人重要程度" });
+    fireEvent.click(within(importance).getByRole("radio", { name: "较高" }));
+    expect(within(importance).getByRole("radio", { name: "较高" })).toBeChecked();
+    expect(within(importance).getByRole("radio", { name: "一般" })).not.toBeChecked();
     fireEvent.change(screen.getByLabelText("当前简历"), { target: { value: "TypeScript engineer" } }); fireEvent.change(screen.getByLabelText("目标岗位"), { target: { value: "AI Engineer" } });
     fireEvent.click(screen.getByRole("button", { name: "保存画像" })); expect(await screen.findByText("已保存")).toBeInTheDocument();
-    expect(screen.getAllByLabelText(/重要程度$/)).toHaveLength(6);
+    expect(screen.getAllByRole("group", { name: /重要程度$/ })).toHaveLength(6);
     expect(screen.getByText(/工作内容包含主导权和产品方向/)).toBeInTheDocument();
     const body = JSON.parse(String(fetcher.mock.calls.find((call) => call[1]?.method === "PUT")?.[1]?.body)); expect(Object.keys(body.weights)).toHaveLength(6); expect(body.weights.work_content).toBeDefined(); expect(body.weights.people_and_company_reliability).toBe("high"); expect(body.weights).not.toHaveProperty("ownership"); expect(body.weights).not.toHaveProperty("product_interest");
   });
@@ -161,6 +163,8 @@ describe("business pages", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => String(input).includes("/api/opportunities/o1") ? json(unconfirmed) : json({})));
     renderApp(); await router.navigate({ to: "/opportunities/$opportunityId", params: { opportunityId: "o1" } });
     expect(await screen.findByLabelText("公司")).toHaveValue("Demo");
+    expect(screen.getByRole("button", { name: "取消" })).toHaveClass("compact-button", "draft-cancel-button");
+    expect(screen.getByRole("button", { name: "保存" })).toHaveClass("compact-button");
     expect(screen.queryByRole("button", { name: "编辑岗位草稿" })).not.toBeInTheDocument();
   });
 
@@ -285,7 +289,7 @@ describe("business pages", () => {
   it("renders recommendation, six dimensions, unknowns and report state", () => {
     const dimensions = Object.fromEntries(DIMENSION_IDS.map((id) => [id, { verdict: id === "life_radius" ? "unknown" as const : "positive" as const, confidence: "low" as const, claimIds: [], risks: [], unknowns: id === "life_radius" ? ["核对通勤"] : [] }])) as unknown as ScreeningReport["dimensions"];
     const report: ScreeningReport = { id: "rp", runId: "r", opportunityId: "o", recommendation: "worth_exploring", confidence: "medium", status: "stale", effective: false, dimensions, matches: ["Agent 匹配"], risks: ["职责过载"], unknowns: ["核对通勤"], rules: ["12 薪"], claims: [{ id: "c1", dimension: "work_content", statement: "工作内容匹配", polarity: "positive", confidence: "medium", status: "supported", resumeEvidence: "Agent", jobEvidence: "Agent" }], assumptions: ["按 12 薪估算"], modelLabel: "本地演示模型", createdAt: now };
-    const rendered = render(<><ReportCard report={report} /><ReportCard report={{ ...report, id: "partial", status: "partial" }} /><ReportCard report={{ ...report, id: "invalid", status: "invalidated" }} /></>); expect(screen.getAllByText("值得深入")).toHaveLength(3); expect(screen.getByText(/已过期 · 中/)).toBeInTheDocument(); expect(rendered.container.querySelectorAll("details.report[open]")).toHaveLength(0); expect(rendered.container.querySelectorAll(".report-chevron")).toHaveLength(3); for (const heading of screen.getAllByRole("heading", { name: "值得深入" })) fireEvent.click(heading.closest("summary")!); expect(rendered.container.querySelectorAll("details.report[open]")).toHaveLength(3); expect(screen.getAllByText("工作内容").length).toBeGreaterThan(0); expect(screen.queryByText("Ownership")).not.toBeInTheDocument(); expect(screen.queryByText("产品兴趣")).not.toBeInTheDocument(); expect(screen.queryByRole("heading", { name: "待核验项" })).not.toBeInTheDocument(); expect(screen.getAllByText("待核验：核对通勤")).toHaveLength(3); expect(screen.getAllByText("Agent 匹配")).toHaveLength(3); expect(screen.getAllByText("简历证据：Agent")).toHaveLength(3); expect(screen.queryByText("按 12 薪估算")).not.toBeInTheDocument(); expect(rendered.container.querySelectorAll(".claims")).toHaveLength(3); expect(rendered.container.querySelectorAll(".partial, .invalidated")).toHaveLength(2);
+    const rendered = render(<><ReportCard report={report} /><ReportCard report={{ ...report, id: "partial", status: "partial" }} /><ReportCard report={{ ...report, id: "invalid", status: "invalidated" }} /></>); expect(screen.getAllByText("值得深入")).toHaveLength(3); expect(screen.getByText(/已过期 · 置信度中/)).toBeInTheDocument(); expect(rendered.container.querySelectorAll("details.report[open]")).toHaveLength(0); expect(rendered.container.querySelectorAll(".report-chevron")).toHaveLength(3); for (const heading of screen.getAllByRole("heading", { name: "值得深入" })) fireEvent.click(heading.closest("summary")!); expect(rendered.container.querySelectorAll("details.report[open]")).toHaveLength(3); expect(screen.getAllByText("工作内容").length).toBeGreaterThan(0); expect(screen.queryByText("Ownership")).not.toBeInTheDocument(); expect(screen.queryByText("产品兴趣")).not.toBeInTheDocument(); expect(screen.queryByRole("heading", { name: "待核验项" })).not.toBeInTheDocument(); expect(screen.getAllByText("待核验：核对通勤")).toHaveLength(3); expect(screen.getAllByText("Agent 匹配")).toHaveLength(3); expect(screen.getAllByText("简历证据：Agent")).toHaveLength(3); expect(screen.queryByText("按 12 薪估算")).not.toBeInTheDocument(); expect(rendered.container.querySelectorAll(".claims")).toHaveLength(3); expect(rendered.container.querySelectorAll(".partial, .invalidated")).toHaveLength(2);
   });
 
   it("shows report assumptions once under the analysis section, not in each recommendation card", async () => {
@@ -304,7 +308,7 @@ describe("business pages", () => {
     expect(screen.getByRole("heading", { name: "补充说明" })).toBeInTheDocument();
     expect(screen.getAllByText("发薪月数未注明，按 12 薪估算")).toHaveLength(1);
     expect(screen.getByText("发薪月数未注明，按 12 薪估算").closest("blockquote")).toBeTruthy();
-    expect(screen.getAllByText(/已过期 · 高 · DeepSeek · deepseek-v4-flash/)).toHaveLength(2);
+    expect(screen.getAllByText(/已过期 · 置信度高 · DeepSeek · deepseek-v4-flash/)).toHaveLength(2);
     expect(document.querySelectorAll("details.report[open]")).toHaveLength(0);
     expect(screen.getByRole("heading", { name: "需谨慎" }).closest(".report")?.textContent).not.toContain("发薪月数未注明，按 12 薪估算");
     expect(screen.getByRole("heading", { name: "值得深入" }).closest(".report")?.textContent).not.toContain("发薪月数未注明，按 12 薪估算");

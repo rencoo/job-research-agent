@@ -341,3 +341,33 @@ ZIP 只包含独立 Markdown 报告，不默认包含附件，也不生成额外
 - 只维护一份当前简历，报告提供岗位定制修改建议。
 - 不自动抓取 BOSS、不使用登录态、不自动投递或开聊。
 - 浏览器插件、地图通勤计算、桌面打包、语义检索和 SaaS 均不属于 MVP。
+
+## 公司与岗位深研实现（2026-09-08）
+
+公司识别默认在歧义时暂停并展示候选与原文依据；用户可以选择、补充线索或跳过。跳过时不采用未确认公司的网页证据。
+
+页面读取失败时，可将搜索摘要固化为 `method=search_snippet` 的资料用于公司候选识别，并在界面明确标记。摘要不能触发自动确认公司，也不进入正式 Claim 提取与引用链；正文不足时仍按覆盖不足生成 partial 报告。公司识别和 Claim 模型异常统一交由 Worker 错误路径分类、退避或失败重试，不能转换为主体歧义或成功报告。失败后的 child Run 复用成功 I/O checkpoint，重新执行失败的模型调用。
+
+```text
+Opportunity → ResearchRun → CompanyResolution
+                              ↓
+                    CompanyResearchSnapshot
+                              ↓
+ResearchPlan → SearchPort → PageReaderPort → SourceDocument
+                                              ↑
+DeepResearchReport → ResearchClaim → EvidenceLink
+```
+
+实现模块：`apps/server/src/deep-research.ts` 编排与 Application、`research-prompts.ts` 结构化提取/独立复核、`packages/research-tools` 搜索/公网访问/正文读取、`packages/database/src/research-repository.ts` 持久化。现有 `model-gateway` 继续承担模型 Adapter，不增加平行模型框架。
+
+公司快照按身份、模式、7 天有效期及六个公司主题的覆盖复用。品牌、法律主体、官网分别保存；公司快照不含个人简历。每个 Claim 指向 SourceDocument 的逐字引用，代码校验引用和模型独立复核语义均通过才可使用；冲突并列保留。
+
+初筛与深研分别保存 current report 引用。ResearchRun.kind 默认为 screening，新增 deep_research；深研状态、预算、当前问题、身份确认版本独立存储。暂停/等待结束当前 ExecutionJob，后续创建新 Job；同公司刷新由数据库锁协调。快照保存后释放锁，等待者随后复用；失败/取消也释放并唤醒。Worker 分为两个抽取/初筛槽及一个研究槽。
+
+研究调用前计数，成功 I/O 和轮次结果持久化，重启复用；最长 30 分钟、100 次调用，child retry 继承消耗。完成条件为覆盖满足或连续两轮无新有效 Claim。预算不足、受限网页或缺少公司身份产出 partial；鉴权/模型错误明确失败，不切换演示数据。历史报告在输入变化或采用更新公司快照后视为 stale。
+
+PageReader 使用 HTTP + Readability/jsdom 与无登录态 Playwright 后备。HTTP DNS 校验后固定 socket 地址，每次重定向重复校验；浏览器请求通过同一安全读取器履约，禁用 service worker、WebSocket、Cookie、下载和非 GET 请求。默认 15 秒 HTTP 超时、2 MB 响应体、6 次重定向、60k 正文字符；浏览器额外限制 30 个子请求。
+
+REST 入口：岗位 deep-research-runs（支持 refreshCompany/parentRunId）、岗位 deep-research 查询、Run attention-responses、deep-research-reports、source-documents、companies/:id/snapshots。沿用 Run SSE/取消/重试。研究页面展示阶段、覆盖问题、资料数量、候选依据和报告证据。
+
+默认 `JRA_RESEARCH_MODE=demo` 仅返回标识清楚的合成公司资料。`live` 使用已配置真实模型与 Tavily；公开页面可能不可达，不能保证查清所有维度。实时联网 smoke 不加入默认测试。

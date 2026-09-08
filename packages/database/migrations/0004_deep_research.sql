@@ -1,0 +1,12 @@
+ALTER TABLE research_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'screening';
+ALTER TABLE opportunities ADD COLUMN current_deep_report_id TEXT;
+CREATE TABLE companies (id TEXT PRIMARY KEY, identity_key TEXT NOT NULL UNIQUE, data_json TEXT NOT NULL);
+CREATE TABLE company_snapshots (id TEXT PRIMARY KEY, company_id TEXT NOT NULL REFERENCES companies(id), created_at INTEGER NOT NULL, data_json TEXT NOT NULL);
+CREATE INDEX company_snapshot_lookup ON company_snapshots(company_id, created_at DESC);
+CREATE TABLE company_refreshes (company_id TEXT PRIMARY KEY REFERENCES companies(id), run_id TEXT NOT NULL REFERENCES research_runs(id));
+CREATE TABLE deep_research_state (run_id TEXT PRIMARY KEY REFERENCES research_runs(id), data_json TEXT NOT NULL);
+CREATE TABLE source_documents (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, data_json TEXT NOT NULL);
+CREATE TABLE deep_claims (id TEXT PRIMARY KEY, owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, data_json TEXT NOT NULL);
+CREATE INDEX deep_claim_owner ON deep_claims(owner_type, owner_id);
+CREATE TABLE evidence_links (id TEXT PRIMARY KEY, claim_id TEXT NOT NULL REFERENCES deep_claims(id), document_id TEXT NOT NULL REFERENCES source_documents(id), data_json TEXT NOT NULL);
+CREATE TABLE deep_reports (id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE REFERENCES research_runs(id), opportunity_id TEXT NOT NULL REFERENCES opportunities(id), data_json TEXT NOT NULL, created_at INTEGER NOT NULL);
