@@ -15,27 +15,27 @@
 **目标**: 完善核心体验，建立数据基础
 
 ### 1.1 完成现有 OpenSpec 变更
-- [ ] #issue-tbd `merge-screening-work-content-dimension` - 合并工作内容维度
-- [ ] #issue-tbd `align-job-draft-preview-edit` - Draft 预览编辑对齐
-- [ ] #issue-tbd `add-deep-research-diagnostics` - 深研诊断增强
+- [x] #1 `merge-screening-work-content-dimension` - 合并工作内容维度 (已实现，待归档)
+- [x] #3 `align-job-draft-preview-edit` - Draft 预览编辑对齐 (已实现，待归档)
+- [x] #2 `add-deep-research-diagnostics` - 深研诊断增强 (已实现，待归档)
 
 ### 1.2 对话式追问能力
-- [ ] #issue-tbd 基础对话引擎 - 基于报告上下文的问答
-- [ ] #issue-tbd 主动提问系统 - 识别未知项并生成追问
-- [ ] #issue-tbd 面试准备助手 - 生成面试问题清单
-- [ ] #issue-tbd 对话历史持久化 - 学习用户关注点
+- [ ] #6 基础对话引擎 - 基于报告上下文的问答
+- [ ] 主动提问系统 - 识别未知项并生成追问
+- [ ] 面试准备助手 - 生成面试问题清单
+- [ ] 对话历史持久化 - 学习用户关注点
 
 ### 1.3 多模态输入支持
-- [ ] #issue-tbd PDF 简历解析 - pdf-parse + 结构化抽取
-- [ ] #issue-tbd 图片 OCR 支持 - Tesseract.js 集成
-- [ ] #issue-tbd 截图导入优化 - 自动识别招聘平台格式
-- [ ] #issue-tbd 多模态数据模型 - 扩展 SourceInput 类型
+- [🚀] #4 PDF 简历解析 - pdf-parse + 结构化抽取 (PR #15 进行中)
+- [ ] #5 图片 OCR 支持 - Tesseract.js 集成
+- [ ] 截图导入优化 - 自动识别招聘平台格式
+- [ ] 多模态数据模型 - 扩展 SourceInput 类型
 
 ### 1.4 个人决策模型基础版
-- [ ] #issue-tbd 用户反馈收集 - 标记系统(感兴趣/不考虑/已投递)
-- [ ] #issue-tbd 隐式反馈学习 - 从标记行为调整权重
-- [ ] #issue-tbd 偏好发现 - 分析用户决策模式
-- [ ] #issue-tbd 权重自适应 - 基于历史数据优化推荐
+- [ ] #8 用户反馈收集 - 标记系统(感兴趣/不考虑/已投递)
+- [ ] #7 隐式反馈学习 - 从标记行为调整权重
+- [ ] 偏好发现 - 分析用户决策模式
+- [ ] 权重自适应 - 基于历史数据优化推荐
 
 ---
 
@@ -44,11 +44,11 @@
 **目标**: 建立知识积累和质量保证体系
 
 ### 2.1 知识图谱基础架构
-- [ ] #issue-tbd 图数据模型设计 - Entity/Relation/Attribute schema
-- [ ] #issue-tbd 公司实体消歧 - 处理品牌/法人/子公司关系
-- [ ] #issue-tbd 技能本体构建 - 技能分类和关联
-- [ ] #issue-tbd 行业分类体系 - Industry taxonomy
-- [ ] #issue-tbd 图查询接口 - 跨岗位关联分析
+- [ ] #11 图数据模型设计 - Entity/Relation/Attribute schema
+- [ ] 公司实体消歧 - 处理品牌/法人/子公司关系
+- [ ] 技能本体构建 - 技能分类和关联
+- [ ] 行业分类体系 - Industry taxonomy
+- [ ] 图查询接口 - 跨岗位关联分析
 
 ### 2.2 历史分析与趋势洞察
 - [ ] #issue-tbd 市场定位分析 - 计算画像稀缺度和薪资分位数
