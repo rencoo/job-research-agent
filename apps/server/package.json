@@ -16,8 +16,9 @@
     "@job-research/database": "workspace:*",
     "@job-research/domain": "workspace:*",
     "@job-research/model-gateway": "workspace:*",
+    "@job-research/research-tools": "workspace:*",
     "fastify": "^5.12.3",
-    "zod": "^4.5.4",
-    "@job-research/research-tools": "workspace:*"
+    "pdf-parse": "^2.4.5",
+    "zod": "^4.5.4"
   }
 }
